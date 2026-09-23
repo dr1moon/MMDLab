@@ -1,0 +1,6 @@
+namespace MmdLab
+{
+void LinkMmdRuntime()
+{
+}
+}
