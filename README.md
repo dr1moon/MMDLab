@@ -26,7 +26,7 @@ The script uses `vswhere` to find MSBuild, generates the Visual Studio 2026 solu
 
 ```text
 Build\Bin\Debug\x64\MmdTests.exe
-Build\Bin\Debug\x64\MmdTests.exe FrameSlot
+Build\Bin\Debug\x64\MmdTests.exe FrameResourcePool
 ```
 
 `MmdTests` is a lightweight native test runner for Core, asset, and runtime tests. Passing assertions avoid failure-record allocations; failures report their expression and source location.

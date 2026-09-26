@@ -64,25 +64,20 @@ void WindowsApplication::Initialize(const HINSTANCE instanceHandle, const int sh
     UpdateWindow(windowHandle_);
 }
 
-int WindowsApplication::Run()
+bool WindowsApplication::ProcessMessages()
 {
     MSG message{};
-    while (true)
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != 0)
     {
-        const BOOL result = GetMessageW(&message, nullptr, 0, 0);
-        if (result == -1)
+        if (message.message == WM_QUIT)
         {
-            throw std::runtime_error("Failed to retrieve a Windows message.");
-        }
-
-        if (result == 0)
-        {
-            return static_cast<int>(message.wParam);
+            return false;
         }
 
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    return true;
 }
 
 LRESULT CALLBACK WindowsApplication::WindowProcedure(

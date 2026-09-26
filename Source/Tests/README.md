@@ -1,6 +1,6 @@
 # MMDLab Tests
 
-`MmdTests` is a native C++ console executable for deterministic unit and integration tests that do not require a window, DXGI, or Direct3D 12 device.
+`MmdTests` is a native C++ console executable for deterministic unit and integration tests. Most tests are pure CPU; one Direct3D 12 test creates a device and falls back to WARP when no hardware adapter is present.
 
 ## Design
 
@@ -14,11 +14,13 @@
 
 ```cpp
 #include "Runtime/Core/TestFramework.h"
+#include "Runtime/Core/FrameResourcePool.h"
 
-MMDLAB_TEST(Core.FrameSlot, AcquiresFreeSlot)
+MMDLAB_TEST(Core.FrameResourcePool, AcquiresAFreeFrame)
 {
-    MMDLAB_CHECK(slot.IsFree());
-    MMDLAB_CHECK_EQUAL(expectedSlotId, actualSlotId);
+    MmdLab::FrameResourcePool pool;
+    const MmdLab::FrameIndex index = pool.Acquire();
+    MMDLAB_CHECK(index < MmdLab::FrameResourcePool::kFrameCount);
 }
 ```
 
@@ -27,5 +29,5 @@ MMDLAB_TEST(Core.FrameSlot, AcquiresFreeSlot)
 ```text
 GenerateProjects.bat --build Debug
 Build\Bin\Debug\x64\MmdTests.exe
-Build\Bin\Debug\x64\MmdTests.exe FrameSlot
+Build\Bin\Debug\x64\MmdTests.exe FrameResourcePool
 ```

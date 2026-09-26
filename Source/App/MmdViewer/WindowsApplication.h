@@ -14,7 +14,11 @@ public:
     WindowsApplication& operator=(const WindowsApplication&) = delete;
 
     void Initialize(HINSTANCE instanceHandle, int showCommand);
-    int Run();
+
+    // Processes all pending window messages. Returns false when the window has closed.
+    bool ProcessMessages();
+
+    [[nodiscard]] HWND GetWindowHandle() const { return windowHandle_; }
 
 private:
     static LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wordParameter, LPARAM longParameter);

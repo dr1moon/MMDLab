@@ -52,7 +52,7 @@ project "MmdViewer"
         "Source/App/MmdViewer/**.hpp",
         "Source/App/MmdViewer/**.cpp",
     }
-    links { "MmdRuntime", "user32" }
+    links { "MmdRuntime", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
 
 project "MmdCooker"
     ConfigureCppProject()
@@ -72,4 +72,4 @@ project "MmdTests"
         "Source/Tests/**.hpp",
         "Source/Tests/**.cpp",
     }
-    links { "MmdRuntime" }
+    links { "MmdRuntime", "d3d12", "dxgi", "dxguid" }

@@ -7,7 +7,7 @@ The first MMDLab milestone is intentionally small: convert a MikuMikuDance (MMD)
 - DirectX 12 (DX12) is the only graphics backend in this milestone.
 - DirectX Graphics Infrastructure (DXGI) and Direct3D 12 (D3D12) are the native graphics interfaces used by `Runtime/DX12`.
 - A graphics processing unit (GPU) executes submitted graphics work; a central processing unit (CPU) owns host-side runtime state.
-- Single-producer, single-consumer (SPSC) describes a queue with exactly one writing thread and one reading thread.
+- Single-producer, single-consumer (SPSC) describes a channel with exactly one writing thread and one reading thread.
 - High-Level Shader Language (HLSL) is used for shader source files.
 - A pipeline state object (PSO) combines fixed graphics pipeline state and compiled shaders for one draw path.
 - The Windows application programming interface (Win32) owns the application window and message loop.
@@ -32,7 +32,7 @@ Source/
 ├─ Tools/
 │  └─ MmdCooker/                # Offline PMX static-mesh importer and binary cooker
 ├─ Runtime/
-│  ├─ Core/                     # Types, errors, frame slots, queues, threading, diagnostics
+│  ├─ Core/                     # Types, errors, frame resources, channels, threading, diagnostics
 │  ├─ Asset/                    # .mmdl reading, CPU asset metadata, startup upload descriptions
 │  ├─ Render/                   # RenderFrame building and RenderThread work compilation
 │  └─ DX12/                     # DXGI/D3D12 resources, RhiThread, fences, presentation
@@ -50,61 +50,55 @@ There is no generic RHI module in the first milestone. `Runtime/DX12` is the onl
 | --- | --- | --- |
 | `App/MmdViewer` | window, input, GameThread, frame pacing policy | PMX parsing, D3D12 resource lifetime |
 | `Tools/MmdCooker` | PMX validation, convention conversion, `.mmdl` writing | window, render loop, D3D12 calls |
-| `Runtime/Core` | frame slots, thread roles, queues, common types, diagnostics | PMX details or D3D12 calls |
+| `Runtime/Core` | frame resources, thread roles, channels, common types, diagnostics | PMX details or D3D12 calls |
 | `Runtime/Asset` | `.mmdl` reading, CPU metadata, asset handles, upload descriptions | command-list submission or GPU resource lifetime |
 | `Runtime/Render` | sealed render data and API-independent work compilation | direct D3D12 object ownership |
 | `Runtime/DX12` | device, queues, fences, descriptors, GPU resources, command lists, present | PMX/VMD knowledge or scene ownership |
 
 ## Frame Ownership and Back-Pressure
 
-The initial runtime uses exactly three `FrameSlot` objects. A slot owns every transient allocation associated with one presented frame. The queues transfer a `FrameLease`, never a naked `std::span` or pointer to temporary storage.
+The initial runtime uses exactly three `FrameResource` objects, one per in-flight frame. Each owns every transient allocation for one presented frame. The channels transfer a `FrameIndex`, never the frame data itself.
 
 ```text
 Free
   -> GameWriting
-  -> GameToRenderQueue
+  -> gameToRender channel
   -> RenderBuilding
-  -> RenderToRhiQueue
-  -> GpuInFlight
-  -> Retiring
+  -> renderToRhi channel
+  -> RhiRetiring
   -> Free
 ```
 
 ```cpp
-struct FrameLease {
-    FrameSlotId slotId;
-    FrameId frameId;
-};
-
-struct FrameSlot {
-    FrameId frameId;
-    FrameArena arena;
-    RenderFrame renderFrame;
-    RenderWorkBatch renderWork;
-    uint64_t submittedFenceValue;
+struct FrameResource {
+    FrameId         frameId;
+    RenderFrame     gameToRender;   // GameThread writes, RenderThread reads.
+    RenderWorkBatch renderToRhi;    // RenderThread writes, RhiThread reads.
+    uint64_t        gpuFenceValue;  // RhiThread records at submit, used for retirement.
 };
 ```
 
-- `GameThread` acquires only a `Free` slot. If no slot is free, it waits for one returned by `RhiThread`; it does not allocate another slot, overwrite a queued slot, or silently drop a frame.
-- `RenderThread` receives a lease, reads the sealed `RenderFrame`, writes `RenderWorkBatch` into the same slot, then forwards the lease.
-- `RhiThread` receives a lease, records and submits D3D12 work, stores the submitted fence value, and owns all GPU-facing retirement.
-- After the fence completes, `RhiThread` retires descriptors and transient GPU allocations, clears the slot, and returns it to `GameThread`.
-- The first milestone uses three slots for deterministic bounded latency. Frame-slot count becomes configurable only after profiling.
+- `GameThread` acquires a free `FrameResource` via `FrameResourcePool::Acquire()`. If none is free it blocks; it does not allocate another, overwrite a queued resource, or drop a frame.
+- `GameThread` writes `gameToRender` and pushes the `FrameIndex` into the `gameToRender` channel.
+- `RenderThread` pops the `FrameIndex`, reads the sealed `RenderFrame`, writes `RenderWorkBatch` into the same resource, and pushes the index into the `renderToRhi` channel.
+- `RhiThread` pops the `FrameIndex`, submits D3D12 work, records `gpuFenceValue`, and owns all GPU-facing retirement.
+- After the fence completes, `RhiThread` retires descriptors and transient GPU allocations, then returns the resource via `FrameResourcePool::Release()`.
+- The first milestone uses three resources for deterministic bounded latency. The count becomes configurable only after profiling.
 
 This is the initial Runtime Data Graph: explicit data ownership, explicit version (`FrameId`), and explicit back-pressure. It is deliberately not a global event bus or a generic scheduler.
 
 ## Evolution Rule
 
-The Runtime Data Graph is the architectural model. SPSC queues, frame slots, and fences are transport and lifetime mechanisms used to realize one edge of that model. Do not evolve this design into `DataBus::Publish` and `DataBus::Subscribe`.
+The Runtime Data Graph is the architectural model. Channels, frame resources, and fences are transport and lifetime mechanisms used to realize one edge of that model. Do not evolve this design into `DataBus::Publish` and `DataBus::Subscribe`.
 
-`FrameSlot` owns frame-local, transient data only. Persistent authoritative state remains owned by the module that defines it:
+`FrameResource` owns frame-local, transient data only. Persistent authoritative state remains owned by the module that defines it:
 
 ```text
 GameThread-owned persistent state
         |
         | project only required immutable inputs
         v
-FrameSlot(N)
+FrameResource(N)
   - GameFrameInput
   - AnimationInput            # Later
   - PoseBuffer                # Later
@@ -115,39 +109,58 @@ FrameSlot(N)
 RhiThread and GPU retirement
 ```
 
-For example, a future Animation System consumes `AnimationInput` and produces `PoseBuffer`; it does not own or tick a character object. The authoritative character state still belongs to the GameThread. This keeps the frame graph immutable and prevents `FrameSlot` from becoming another global world container.
+For example, a future Animation System consumes `AnimationInput` and produces `PoseBuffer`; it does not own or tick a character object. The authoritative character state still belongs to the GameThread. This keeps the frame graph immutable and prevents `FrameResource` from becoming another global world container.
 
 Add general `Read / Write / Version / Phase` declarations only when a real branch appears, such as Animation producing a pose that is independently consumed by rendering and another system. Until then, the fixed lease transfer is the scheduler.
 
 ## Thread Model
 
-Thread names are logical roles. The bootstrap path may temporarily run roles on fewer operating-system threads, but queue ownership and frame-slot transitions must remain identical.
+Thread names are logical roles. The bootstrap path may temporarily run roles on fewer operating-system threads, but channel ownership and frame-resource transitions must remain identical.
 
 ```text
-GameThread                         RenderThread                      RhiThread
-    |                                    |                                |
-    |-- GameToRenderFrameQueue --------->|                                |
-    |                                    |-- RenderToRhiWorkQueue -------->|
-    |                                    |                                |-- D3D12 driver calls
-    |<-- RhiToGameReturnedSlotQueue --------------------------------------|
+FrameResourcePool
+        |  Acquire() -> FrameIndex
+        v
+GameThread
+        |
+        | FrameIndex          gameToRender  (Channel<FrameIndex, 3>)
+        v
+RenderThread
+        |
+        | FrameIndex          renderToRhi   (Channel<FrameIndex, 3>)
+        v
+RhiThread
+        |
+        | Release() after fence
+        v
+FrameResourcePool
 ```
 
 ```cpp
-using GameToRenderFrameQueue = SpscQueue<FrameLease>;
-using RenderToRhiWorkQueue = SpscQueue<FrameLease>;
-using RhiToGameReturnedSlotQueue = SpscQueue<FrameSlotId>;
+FrameResourcePool pool;              // owns the three FrameResource objects
+Channel<FrameIndex, 3> gameToRender; // GameThread -> RenderThread
+Channel<FrameIndex, 3> renderToRhi;  // RenderThread -> RhiThread
 
-GameToRenderFrameQueue::Producer gameToRenderFrame;
-GameToRenderFrameQueue::Consumer renderFromGameFrame;
+// GameThread
+FrameIndex index = pool.Acquire();
+pool.Get(index).gameToRender = BuildRenderFrame();
+gameToRender.Push(index);
 
-RenderToRhiWorkQueue::Producer renderToRhiWork;
-RenderToRhiWorkQueue::Consumer rhiFromRenderWork;
+// RenderThread
+while (auto index = gameToRender.Pop()) {
+    FrameResource& frame = pool.Get(*index);
+    frame.renderToRhi = CompileWork(frame.gameToRender);
+    renderToRhi.Push(*index);
+}
 
-RhiToGameReturnedSlotQueue::Producer rhiToGameReturnedSlot;
-RhiToGameReturnedSlotQueue::Consumer gameFromRhiReturnedSlot;
+// RhiThread
+while (auto index = renderToRhi.Pop()) {
+    SubmitToGpu(pool.Get(*index));
+    pool.Release(*index);
+}
 ```
 
-The queue name answers "from whom, to whom, and what kind of data." The endpoint name answers "which role owns this handle." `RhiThread` is the only owner of swap-chain presentation, D3D12 queue submission, fence polling, descriptor retirement, and native GPU resource destruction. This isolates driver-facing synchronization from `RenderThread`.
+The channel type answers "what kind of data" (`FrameIndex`); the instance name answers "from whom, to whom." `RhiThread` is the only owner of swap-chain presentation, D3D12 queue submission, fence polling, descriptor retirement, and native GPU resource destruction. This isolates driver-facing synchronization from `RenderThread`.
 
 ## Execution Resources and CPU Budget
 
@@ -266,38 +279,38 @@ Use queue state and slot-state duration to identify the limiting stage:
 
 | Observation | Likely Limiting Stage |
 | --- | --- |
-| `GameToRenderFrameQueue` remains full | `RenderThread` is behind frame production |
-| `RenderToRhiWorkQueue` remains full | `RhiThread`, driver-facing work, or presentation is behind |
-| Both queues are mostly empty but no slot is free | GPU execution, fence completion, or presentation timing is behind |
-| A slot remains in `GameWriting` or `RenderBuilding` for too long | GameThread or RenderThread CPU work is behind |
+| `gameToRender` channel remains full | `RenderThread` is behind frame production |
+| `renderToRhi` channel remains full | `RhiThread`, driver-facing work, or presentation is behind |
+| Both channels are mostly empty but no frame is free | GPU execution, fence completion, or presentation timing is behind |
+| A frame stays in `GameWriting` or `RenderBuilding` too long | GameThread or RenderThread CPU work is behind |
 
 For a static-triangle prototype, RenderThread and RhiThread CPU work should normally be cheap. The common reason for all slots remaining in flight is GPU fence latency or presentation pacing. That is expected behavior under vertical synchronization and is not automatically a bug.
 
-Record the time spent in every slot state: `GameWriting`, `GameToRenderQueue`, `RenderBuilding`, `RenderToRhiQueue`, `GpuInFlight`, and `Retiring`. GameThread must wait on a free-slot event or condition, never spin while polling for one.
+Record the time spent in every state: `GameWriting`, the `gameToRender` channel, `RenderBuilding`, the `renderToRhi` channel, and `RhiRetiring`. GameThread must wait on a free-frame event or condition, never spin while polling for one.
 
 ## Initial Data Contracts
 
 ```text
 GameThread
-  Write RenderFrame(N) into FrameSlot(N)
+  Write RenderFrame(N) into FrameResource(N)
         |
         v
 RenderThread
   Read  RenderFrame(N)
-  Write RenderWorkBatch(N) into FrameSlot(N)
+  Write RenderWorkBatch(N) into FrameResource(N)
         |
         v
 RhiThread
   Read  RenderWorkBatch(N)
-  Write submitted fence value
-  Return FrameSlot(N) only after fence completion
+  Write gpuFenceValue
+  Return FrameResource(N) only after fence completion
 ```
 
 | Producer | Contract | Consumer | Access Rule |
 | --- | --- | --- | --- |
 | `GameThread` | `RenderFrame` | `RenderThread` | one writer, sealed immutable read |
-| `RenderThread` | `RenderWorkBatch` | `RhiThread` | one writer, ordered lease transfer |
-| `RhiThread` | returned `FrameSlotId` | `GameThread` | one writer, only after fence retirement |
+| `RenderThread` | `RenderWorkBatch` | `RhiThread` | one writer, ordered channel transfer |
+| `RhiThread` | returned `FrameIndex` | `FrameResourcePool` | one writer, only after fence retirement |
 
 `RenderThread` never fetches mutable state from application or asset modules. `RenderFrame` contains only dense render-facing data and stable asset handles. The fixed contracts become general `Read / Write / Version / Phase` declarations only after Animation or Physics creates a real branch in the graph.
 
@@ -373,30 +386,30 @@ The first renderer supports only:
 
 It does not support a render graph, texture streaming, material graphs, shadows, skinning, animation, transparency, GPU-driven rendering, a second graphics backend, or runtime asset streaming.
 
+Command queues are deliberately limited to one DIRECT queue. A DIRECT queue can record graphics, compute, and copy work, so it covers the triangle and the static-mesh upload path. A COPY queue (background uploads and texture streaming) and an ASYNC compute queue (compute work that overlaps the 3D pass) are deliberate omissions, not gaps: add a COPY queue when asynchronous loading or texture streaming becomes a measured requirement, and an ASYNC queue when a real compute workload appears.
+
 ## First Runtime Types
 
 ```cpp
 struct RenderFrame {
-    FrameId frameId;
     std::span<const RenderInstance> instances;
     CameraConstants camera;
 };
 
 struct RenderWorkBatch {
-    FrameId frameId;
     std::span<const DrawPacket> draws;
 };
 ```
 
-`RenderFrame` and `RenderWorkBatch` are stored inside `FrameSlot::arena`; they are never copied through a queue. Their spans remain valid because the lease transfers ownership of the slot through all consumer stages, and the slot returns to `Free` only after D3D12 fence retirement.
+`RenderFrame` and `RenderWorkBatch` are stored inside the `FrameResource`; they are never copied through a channel. Their spans remain valid because the index transfer carries ownership of the resource through all consumer stages, and the resource returns to `Free` only after D3D12 fence retirement.
 
 ## Implementation Order
 
 1. Premake targets: `MmdRuntime`, `MmdViewer`, and `MmdCooker`.
-2. `Runtime/Core`: errors, logging, `FrameId`, three-slot state machine, and tested SPSC queues.
+2. `Runtime/Core`: errors, logging, `FrameId`, three-frame state machine, and tested channels.
 3. `Runtime/DX12`: debug layer, device, direct queue, swap chain, fence, descriptor heap, and a hard-coded triangle.
-4. `Runtime/Render`: `GameToRenderFrameQueue` and `RenderToRhiWorkQueue` with one triangle instance.
-5. `Runtime/DX12`: `RhiToGameReturnedSlotQueue`, fence retirement, and bounded back-pressure.
+4. `Runtime/Render`: the `gameToRender` and `renderToRhi` channels with one triangle instance.
+5. `Runtime/DX12`: fence retirement via `FrameResourcePool::Release`, and bounded back-pressure.
 6. `Runtime/Asset`: `.mmdl` header, chunk table, static mesh payload, and strict range validation.
 7. `Tools/MmdCooker`: PMX static-mesh import into `.mmdl`.
 8. Replace the hard-coded triangle with a synchronously uploaded cooked PMX static mesh.

@@ -23,7 +23,7 @@ MMDLab is a personal experimental project that incrementally builds a minimal Mi
 - Keep central processing unit (CPU) asset parsing, animation evaluation, and graphics processing unit (GPU) rendering separated by explicit interfaces.
 - Make resource ownership, error handling, GPU synchronization, and resource states explicit. Prefer resource acquisition is initialization (RAII) and avoid hidden global state.
 - Treat the Runtime Data Graph as the architectural model and typed queues as transport mechanisms. Do not add a generic data bus, event bus, or scheduler before a real dependency branch requires it.
-- Keep `FrameSlot` data frame-local and transient. Persistent authoritative state remains owned by its defining module and is copied or projected into an immutable per-frame input only when a consumer needs it.
+- Keep `FrameResource` data frame-local and transient. Persistent authoritative state remains owned by its defining module and is copied or projected into an immutable per-frame input only when a consumer needs it.
 - Treat a thread as an execution resource, not a module boundary. Dedicated ownership contexts, shared compute work, and asynchronous input/output must remain distinct concepts.
 - Derive future worker counts from a platform CPU budget and measured topology, not directly from raw logical-processor count. Do not pin threads or reserve physical cores until profiling justifies it.
 - Name configurable worker resources as `ComputeThreadsGroup` and `IoThreadsGroup`, not as module-owned threads. Operating-system asynchronous I/O does not imply that an I/O threads group is occupied while a request waits.
