@@ -76,6 +76,15 @@ bool WindowsApplication::ProcessMessages()
 
         TranslateMessage(&message);
         DispatchMessageW(&message);
+
+        // Forward the raw message to the RhiThread's imgui input queue (dropped if full).
+        if (inputSink_ != nullptr)
+        {
+            inputSink_->TryPush(Win32InputMessage{
+                static_cast<std::uint32_t>(message.message),
+                static_cast<std::uintptr_t>(message.wParam),
+                static_cast<std::intptr_t>(message.lParam) });
+        }
     }
     return true;
 }

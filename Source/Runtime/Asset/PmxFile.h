@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Asset/MmdlFormat.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -45,4 +47,10 @@ struct PmxStaticMesh
 // textures, and materials. Skips skinning, bones, morphs, and physics. Throws
 // std::runtime_error on malformed or unsupported input.
 [[nodiscard]] PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path);
+
+// Converts a parsed PMX static mesh into the runtime .mmdl mesh data representation, applying
+// the same convention conversion the offline cooker performs (positions/normals widened to
+// four components, PMX materials mapped to runtime toon materials, one draw packet per PMX
+// material). Texture paths pass through unchanged.
+[[nodiscard]] MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx);
 } // namespace MmdLab

@@ -1,18 +1,18 @@
 #pragma once
 
-#include "Runtime/Asset/ImageLoader.h"
-#include "Runtime/Asset/MeshAsset.h"
 #include "Runtime/Core/Channel.h"
 #include "Runtime/Core/FrameResource.h"
 #include "Runtime/Core/FrameResourcePool.h"
 #include "Runtime/Core/Runnable.h"
+#include "Runtime/Core/Ui.h"
 
 #include <windows.h>
 
 #include <cstdint>
 #include <deque>
 #include <memory>
-#include <span>
+
+struct ImGuiContext;
 
 namespace MmdLab
 {
@@ -20,9 +20,10 @@ class Dx12Renderer;
 class RenderDocCapture;
 
 // The RhiThread role: owns all native D3D12 state (device, swap chain, mesh buffers,
-// pipeline). It consumes a FrameIndex from the RenderThread, submits the frame's draw list,
-// presents, and returns the frame to the pool. The renderer is created in Init(), on this
-// thread.
+// pipeline) and the imgui context plus its Win32/DX12 backends. It consumes a FrameIndex from
+// the RenderThread, drains forwarded Win32 input into imgui, submits the frame's draw list and
+// the imgui overlay, presents, and returns the frame to the pool. It rebuilds GPU model
+// resources when the selected model's generation changes.
 class RhiThread final : public Runnable
 {
 public:
@@ -32,8 +33,8 @@ public:
         HWND window,
         std::uint32_t width,
         std::uint32_t height,
-        const MeshAsset& mesh,
-        std::span<const Image> textures);
+        Channel<Win32InputMessage, kWin32InputQueueCapacity>& inputQueue,
+        Channel<UiRequest, kUiRequestQueueCapacity>& uiQueue);
 
     ~RhiThread() override;
 
@@ -49,11 +50,14 @@ private:
     HWND window_;
     std::uint32_t width_;
     std::uint32_t height_;
-    const MeshAsset* mesh_;
-    std::span<const Image> textures_; // CPU textures, uploaded by the renderer in Init().
+    Channel<Win32InputMessage, kWin32InputQueueCapacity>* inputQueue_;
+    Channel<UiRequest, kUiRequestQueueCapacity>* uiQueue_;
     std::unique_ptr<Dx12Renderer> renderer_;
     std::unique_ptr<RenderDocCapture> capture_;
     bool captureRequested_ = false;
+    ImGuiContext* imguiContext_ = nullptr;
+    // Model generation last applied to the renderer; the sentinel forces the first upload.
+    std::uint32_t lastModelGeneration_ = 0xFFFFFFFFu;
 
     // Frame indices submitted to the GPU, oldest first, awaiting fence completion before
     // their frame resources are returned to the pool.

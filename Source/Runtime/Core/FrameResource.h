@@ -2,9 +2,13 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace MmdLab
 {
+struct MeshAsset;
+struct Image;
+
 // Identifies which physical frame resource (0..2) a stage is currently handling.
 // This is spatial identity: "where" in the rotating set of in-flight frames.
 using FrameIndex = uint32_t;
@@ -15,10 +19,15 @@ using FrameIndex = uint32_t;
 using FrameId = uint64_t;
 
 // The render-facing data for one frame: the sealed, immutable payload the GameThread
-// projects and the RenderThread consumes. Populated with camera and instance data once
-// the render milestone is reached.
+// projects and the RenderThread consumes. It carries the selected model's CPU asset data and
+// the UI projection (model names + selection) that the RhiThread renders through imgui.
 struct RenderFrame
 {
+    const MeshAsset* mesh = nullptr;          // Selected model's CPU mesh (owned by the Scene).
+    std::span<const Image> textures;          // Selected model's CPU textures (owned by the Scene).
+    std::uint32_t modelGeneration = 0;        // Bumps on every model switch.
+    std::span<const std::string> modelNames;  // UTF-8 display names (owned by the Scene).
+    std::uint32_t selectedModel = 0;          // Index the UI combo shows.
 };
 
 // One sub-mesh draw command: a range of the index buffer plus the material that shades it.
@@ -30,11 +39,16 @@ struct DrawPacket
 };
 
 // The compiled render work the RenderThread produces and the RhiThread consumes: the
-// immutable draw list. The span points at the mesh asset's draw packets, which outlive
-// every frame.
+// immutable draw list plus the model and UI projection it needs to (re)build GPU resources
+// and draw the imgui overlay.
 struct RenderWorkBatch
 {
     std::span<const DrawPacket> drawPackets;
+    const MeshAsset* mesh = nullptr;
+    std::span<const Image> textures;
+    std::uint32_t modelGeneration = 0;
+    std::span<const std::string> modelNames;
+    std::uint32_t selectedModel = 0;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the

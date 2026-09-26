@@ -15,6 +15,7 @@ struct Image
 };
 
 // Decodes a texture file (PNG, BMP, TGA, JPEG, ...) via stb_image. Throws
-// std::runtime_error on failure.
-[[nodiscard]] Image LoadImage(const std::filesystem::path& path);
+// std::runtime_error on failure. Named DecodeImage (not LoadImage) to avoid colliding with the
+// <windows.h> LoadImage macro.
+[[nodiscard]] Image DecodeImage(const std::filesystem::path& path);
 } // namespace MmdLab

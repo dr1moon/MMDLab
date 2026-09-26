@@ -35,9 +35,30 @@ local function ConfigureCppProject()
         defines { "UNICODE", "_UNICODE", "WIN32_LEAN_AND_MEAN", "NOMINMAX" }
 end
 
+project "ImGui"
+    ConfigureCppProject()
+    kind "StaticLib"
+    includedirs {
+        "Source/ThirdParty/imgui",
+        "Source/ThirdParty/imgui/backends",
+    }
+    files {
+        "Source/ThirdParty/imgui/imgui.cpp",
+        "Source/ThirdParty/imgui/imgui_draw.cpp",
+        "Source/ThirdParty/imgui/imgui_tables.cpp",
+        "Source/ThirdParty/imgui/imgui_widgets.cpp",
+        "Source/ThirdParty/imgui/backends/imgui_impl_win32.cpp",
+        "Source/ThirdParty/imgui/backends/imgui_impl_dx12.cpp",
+    }
+
 project "MmdRuntime"
     ConfigureCppProject()
     kind "StaticLib"
+    includedirs {
+        "Source/ThirdParty/imgui",
+        "Source/ThirdParty/imgui/backends",
+    }
+    links { "ImGui" }
     files {
         "Source/Runtime/**.h",
         "Source/Runtime/**.hpp",
@@ -52,7 +73,7 @@ project "MmdViewer"
         "Source/App/MmdViewer/**.hpp",
         "Source/App/MmdViewer/**.cpp",
     }
-    links { "MmdRuntime", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
+    links { "MmdRuntime", "ImGui", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
 
 project "MmdCooker"
     ConfigureCppProject()

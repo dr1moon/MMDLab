@@ -31,7 +31,7 @@ std::string WideToUtf8(const std::wstring& wide)
 }
 } // namespace
 
-Image LoadImage(const std::filesystem::path& path)
+Image DecodeImage(const std::filesystem::path& path)
 {
     const std::string utf8Path = WideToUtf8(path.wstring());
 

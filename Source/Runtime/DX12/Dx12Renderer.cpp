@@ -3,9 +3,14 @@
 #include "Runtime/DX12/ShaderCompiler.h"
 #include "Runtime/DX12/Shaders.h"
 
+#include "imgui_impl_dx12.h"
+
 #include <windows.h>
 
+#include <DirectXMath.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -42,35 +47,20 @@ namespace MmdLab
 Dx12Renderer::Dx12Renderer(
     const HWND window,
     const std::uint32_t width,
-    const std::uint32_t height,
-    const MeshAsset& mesh,
-    const std::span<const Image> textures)
+    const std::uint32_t height)
     : device_()
     , queue_(device_.Get())
     , swapChain_(device_.GetFactory(), queue_.Get(), window, width, height)
     , rootSignature_(device_.Get())
-    , materials_(mesh.materials)
     , width_(width)
     , height_(height)
 {
     rtvDescriptorSize_ = device_.Get()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    // Project each runtime material into the pixel shader's per-material constant layout.
-    materialParams_.reserve(materials_.size());
-    for (const Material& material : materials_)
-    {
-        MaterialShaderParams params{};
-        for (int c = 0; c < 4; ++c) { params.baseColor[c] = material.baseColor[c]; }
-        for (int c = 0; c < 3; ++c) { params.ambient[c] = material.ambientColor[c]; }
-        for (int c = 0; c < 3; ++c) { params.specular[c] = material.specularColor[c]; }
-        params.shininess = material.specularStrength;
-        params.sphereMode = static_cast<float>(material.sphereMode);
-        materialParams_.push_back(params);
-    }
-
     CreatePipelineState();
     CreateRenderTargetViews();
     CreateDepthBuffer();
+    CreateImGuiSrvHeap();
 
     for (std::uint32_t i = 0; i < kFrameCount; ++i)
     {
@@ -94,10 +84,59 @@ Dx12Renderer::Dx12Renderer(
         throw std::runtime_error("Failed to create the command list.");
     }
     commandList_->Close();
+}
+
+void Dx12Renderer::SetModel(const MeshAsset& mesh, const std::span<const Image> textures)
+{
+    WaitForGpuIdle();
+    ReleaseModelResources();
+
+    materials_ = mesh.materials;
+
+    // Project each runtime material into the pixel shader's per-material constant layout.
+    materialParams_.reserve(materials_.size());
+    for (const Material& material : materials_)
+    {
+        MaterialShaderParams params{};
+        for (int c = 0; c < 4; ++c) { params.baseColor[c] = material.baseColor[c]; }
+        for (int c = 0; c < 3; ++c) { params.ambient[c] = material.ambientColor[c]; }
+        for (int c = 0; c < 3; ++c) { params.specular[c] = material.specularColor[c]; }
+        params.shininess = material.specularStrength;
+        params.sphereMode = static_cast<float>(material.sphereMode);
+        materialParams_.push_back(params);
+    }
+
+    // Frame the perspective camera to the model's bounding box and reset the orbit.
+    float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
+    float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
+    for (const MmdlVertex& vertex : mesh.vertices)
+    {
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            boundsMin[axis] = std::min(boundsMin[axis], vertex.position[axis]);
+            boundsMax[axis] = std::max(boundsMax[axis], vertex.position[axis]);
+        }
+    }
+    cameraExtent_ = 0.0f;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        cameraTarget_[axis] = (boundsMin[axis] + boundsMax[axis]) * 0.5f;
+        cameraExtent_ = std::max(cameraExtent_, boundsMax[axis] - boundsMin[axis]);
+    }
+    if (cameraExtent_ <= 0.0f)
+    {
+        cameraExtent_ = 1.0f;
+    }
+    cameraDistance_ = cameraExtent_ * 2.0f;
+    // PMX models face -Z (toward the default D3D view), so start the orbit on that side.
+    cameraYaw_ = 3.14159265f;
+    cameraPitch_ = 0.0f;
 
     CreateMeshBuffers(mesh);
     CreateTextures(textures);
-    CreateConstantBuffer(mesh);
+    CreateConstantBuffer();
+
+    modelSet_ = true;
 }
 
 void Dx12Renderer::CreatePipelineState()
@@ -555,40 +594,8 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
     }
 }
 
-void Dx12Renderer::CreateConstantBuffer(const MeshAsset& mesh)
+void Dx12Renderer::CreateConstantBuffer()
 {
-    float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
-    float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
-    for (const MmdlVertex& vertex : mesh.vertices)
-    {
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            boundsMin[axis] = std::min(boundsMin[axis], vertex.position[axis]);
-            boundsMax[axis] = std::max(boundsMax[axis], vertex.position[axis]);
-        }
-    }
-
-    float center[3];
-    float extent = 0.0f;
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        center[axis] = (boundsMin[axis] + boundsMax[axis]) * 0.5f;
-        extent = std::max(extent, boundsMax[axis] - boundsMin[axis]);
-    }
-    const float scale = 1.5f / extent;
-    const float zScale = 1.0f / (boundsMax[2] - boundsMin[2]);
-
-    // An orthographic "fit to clip space" view-projection, column-major. X/Y use a uniform
-    // scale so proportions are preserved; Z is remapped to [0, 1] so nothing is clipped.
-    float viewProjection[16] = {};
-    viewProjection[0] = scale;
-    viewProjection[5] = scale;
-    viewProjection[10] = zScale;
-    viewProjection[12] = -center[0] * scale;
-    viewProjection[13] = -center[1] * scale;
-    viewProjection[14] = -boundsMin[2] * zScale;
-    viewProjection[15] = 1.0f;
-
     D3D12_HEAP_PROPERTIES uploadHeap{};
     uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC description{};
@@ -600,34 +607,86 @@ void Dx12Renderer::CreateConstantBuffer(const MeshAsset& mesh)
     description.SampleDesc.Count = 1;
     description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    if (FAILED(device_.Get()->CreateCommittedResource(
-        &uploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &description,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&constantBuffer_))))
+    for (std::uint32_t i = 0; i < kFrameCount; ++i)
     {
-        throw std::runtime_error("Failed to create the camera constant buffer.");
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &uploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &description,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&constantBuffers_[i]))))
+        {
+            throw std::runtime_error("Failed to create a camera constant buffer.");
+        }
+        // Upload-heap buffers stay persistently mapped; UpdateCameraConstants() writes each frame.
+        constantBuffers_[i]->Map(0, nullptr, &constantBufferMapped_[i]);
     }
+}
 
-    // Camera constants: viewProjection (16 floats) + light direction + camera direction
-    // (24 floats = 96 bytes), matching cbuffer CameraConstants in Shaders.h.
+void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex)
+{
+    using namespace DirectX;
+
+    const float cosPitch = std::cos(cameraPitch_);
+    const float eyeX = cameraTarget_[0] + cameraDistance_ * cosPitch * std::sin(cameraYaw_);
+    const float eyeY = cameraTarget_[1] + cameraDistance_ * std::sin(cameraPitch_);
+    const float eyeZ = cameraTarget_[2] + cameraDistance_ * cosPitch * std::cos(cameraYaw_);
+
+    const XMVECTOR eye = XMVectorSet(eyeX, eyeY, eyeZ, 0.0f);
+    const XMVECTOR focus = XMVectorSet(cameraTarget_[0], cameraTarget_[1], cameraTarget_[2], 0.0f);
+    const XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    const XMMATRIX view = XMMatrixLookAtLH(eye, focus, up);
+    const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+    const float nearZ = std::max(0.001f, cameraExtent_ * 0.01f);
+    const float farZ = cameraExtent_ * 100.0f + cameraDistance_;
+    const XMMATRIX projection = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.0f), aspect, nearZ, farZ);
+
+    // HLSL mul(viewProjection, pos) treats pos as a column vector; DirectXMath is row-vector,
+    // and XMStoreFloat4x4 lays the matrix out in the column-major order HLSL expects, so the
+    // view*projection matrix is stored directly (no transpose).
+    XMFLOAT4X4 viewProjection;
+    XMStoreFloat4x4(&viewProjection, XMMatrixMultiply(view, projection));
+
+    // Camera constants: viewProjection (16 floats) + lightDirection + cameraDirection (24 floats),
+    // matching cbuffer CameraConstants in Shaders.h.
     float cameraConstants[24] = {};
-    std::memcpy(cameraConstants, viewProjection, sizeof(viewProjection));
-    cameraConstants[16] = -0.3f; // lightDirection.xyz (provisional diagonal key light).
+    std::memcpy(cameraConstants, &viewProjection, sizeof(viewProjection));
+    cameraConstants[16] = -0.3f; // lightDirection.xyz (fixed key light).
     cameraConstants[17] = -0.8f;
     cameraConstants[18] = -0.6f;
-    cameraConstants[20] = 0.0f; // cameraDirection.xyz (orthographic view forward, -Z).
-    cameraConstants[21] = 0.0f;
-    cameraConstants[22] = -1.0f;
+    float forwardX = cameraTarget_[0] - eyeX;
+    float forwardY = cameraTarget_[1] - eyeY;
+    float forwardZ = cameraTarget_[2] - eyeZ;
+    const float forwardLength = std::sqrt(forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
+    if (forwardLength > 1e-6f)
+    {
+        forwardX /= forwardLength;
+        forwardY /= forwardLength;
+        forwardZ /= forwardLength;
+    }
+    cameraConstants[20] = forwardX; // cameraDirection.xyz (view forward).
+    cameraConstants[21] = forwardY;
+    cameraConstants[22] = forwardZ;
 
-    void* mapped = nullptr;
-    constantBuffer_->Map(0, nullptr, &mapped);
-    std::memcpy(mapped, cameraConstants, sizeof(cameraConstants));
-    constantBuffer_->Unmap(0, nullptr);
+    std::memcpy(constantBufferMapped_[frameIndex], cameraConstants, sizeof(cameraConstants));
+}
 
-    constantBufferAddress_ = constantBuffer_->GetGPUVirtualAddress();
+void Dx12Renderer::Orbit(const float deltaX, const float deltaY)
+{
+    cameraYaw_ += deltaX * 0.005f;
+    cameraPitch_ -= deltaY * 0.005f;
+    const float limit = 1.5533f; // ~89 degrees; keeps the up vector from degenerating at the poles.
+    cameraPitch_ = std::max(-limit, std::min(limit, cameraPitch_));
+}
+
+void Dx12Renderer::Zoom(const float wheelDelta)
+{
+    cameraDistance_ *= std::exp(-wheelDelta * 0.1f);
+    const float minimum = cameraExtent_ * 0.05f;
+    const float maximum = cameraExtent_ * 50.0f;
+    cameraDistance_ = std::max(minimum, std::min(maximum, cameraDistance_));
 }
 
 void Dx12Renderer::WaitForPreviousFrame(const std::uint32_t frameIndex)
@@ -641,7 +700,84 @@ void Dx12Renderer::WaitForPreviousFrame(const std::uint32_t frameIndex)
     }
 }
 
-std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets)
+void Dx12Renderer::WaitForGpuIdle()
+{
+    if (frameFenceValue_ == 0)
+    {
+        return; // Nothing submitted yet.
+    }
+    if (frameFence_->GetCompletedValue() < frameFenceValue_)
+    {
+        const HANDLE event = CreateEventW(nullptr, false, false, nullptr);
+        frameFence_->SetEventOnCompletion(frameFenceValue_, event);
+        WaitForSingleObject(event, INFINITE);
+        CloseHandle(event);
+    }
+}
+
+void Dx12Renderer::CreateImGuiSrvHeap()
+{
+    imguiSrvDescriptorSize_ = device_.Get()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    D3D12_DESCRIPTOR_HEAP_DESC description{};
+    description.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    description.NumDescriptors = kImGuiSrvCount;
+    description.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    description.NodeMask = 0;
+
+    if (FAILED(device_.Get()->CreateDescriptorHeap(&description, IID_PPV_ARGS(&imguiSrvHeap_))))
+    {
+        throw std::runtime_error("Failed to create the imgui SRV descriptor heap.");
+    }
+
+    imguiSrvHeapCpuStart_ = imguiSrvHeap_->GetCPUDescriptorHandleForHeapStart();
+    imguiSrvHeapGpuStart_ = imguiSrvHeap_->GetGPUDescriptorHandleForHeapStart();
+
+    imguiSrvFreeIndices_.reserve(kImGuiSrvCount);
+    for (std::uint32_t i = kImGuiSrvCount; i > 0; --i)
+    {
+        imguiSrvFreeIndices_.push_back(i - 1);
+    }
+}
+
+void Dx12Renderer::AllocImGuiSrvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* const cpu, D3D12_GPU_DESCRIPTOR_HANDLE* const gpu)
+{
+    const std::uint32_t index = imguiSrvFreeIndices_.back();
+    imguiSrvFreeIndices_.pop_back();
+    cpu->ptr = imguiSrvHeapCpuStart_.ptr + static_cast<SIZE_T>(index) * imguiSrvDescriptorSize_;
+    gpu->ptr = imguiSrvHeapGpuStart_.ptr + static_cast<SIZE_T>(index) * imguiSrvDescriptorSize_;
+}
+
+void Dx12Renderer::FreeImGuiSrvDescriptor(const D3D12_CPU_DESCRIPTOR_HANDLE cpu, const D3D12_GPU_DESCRIPTOR_HANDLE gpu)
+{
+    (void)gpu; // The CPU handle alone identifies the slot; gpu mirrors it.
+    const std::uint32_t index = static_cast<std::uint32_t>((cpu.ptr - imguiSrvHeapCpuStart_.ptr) / imguiSrvDescriptorSize_);
+    imguiSrvFreeIndices_.push_back(index);
+}
+
+void Dx12Renderer::ReleaseModelResources()
+{
+    materialSrvBundles_.clear();
+    materialParams_.clear();
+    materials_ = {};
+    textures_.clear();
+    whiteTexture_.Reset();
+    toonRampTexture_.Reset();
+    srvHeap_.Reset();
+    for (std::uint32_t i = 0; i < kFrameCount; ++i)
+    {
+        constantBuffers_[i].Reset();
+        constantBufferMapped_[i] = nullptr;
+    }
+    indexBuffer_.Reset();
+    vertexBuffer_.Reset();
+    vertexBufferView_ = {};
+    indexBufferView_ = {};
+    srvDescriptorSize_ = 0;
+    modelSet_ = false;
+}
+
+std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets, ImDrawData* const uiDrawData)
 {
     const std::uint32_t frameIndex = swapChain_.CurrentBackBufferIndex();
 
@@ -651,7 +787,7 @@ std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets
     {
         throw std::runtime_error("Failed to reset the command allocator.");
     }
-    if (FAILED(commandList_->Reset(commandAllocators_[frameIndex].Get(), pipelineStateCulled_.Get())))
+    if (FAILED(commandList_->Reset(commandAllocators_[frameIndex].Get(), nullptr)))
     {
         throw std::runtime_error("Failed to reset the command list.");
     }
@@ -674,34 +810,46 @@ std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets
     commandList_->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    D3D12_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(width_);
-    viewport.Height = static_cast<float>(height_);
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    commandList_->RSSetViewports(1, &viewport);
-
-    D3D12_RECT scissor{};
-    scissor.right = static_cast<LONG>(width_);
-    scissor.bottom = static_cast<LONG>(height_);
-    commandList_->RSSetScissorRects(1, &scissor);
-
-    commandList_->SetGraphicsRootSignature(rootSignature_.Get());
-    commandList_->SetGraphicsRootConstantBufferView(0, constantBufferAddress_);
-    ID3D12DescriptorHeap* descriptorHeaps[] = { srvHeap_.Get() };
-    commandList_->SetDescriptorHeaps(1, descriptorHeaps);
-    commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    commandList_->IASetVertexBuffers(0, 1, &vertexBufferView_);
-    commandList_->IASetIndexBuffer(&indexBufferView_);
-
-    for (const DrawPacket& packet : drawPackets)
+    if (modelSet_)
     {
-        const Material& material = materials_[packet.materialIndex];
-        commandList_->SetPipelineState(
-            (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
-        commandList_->SetGraphicsRoot32BitConstants(1, 16, &materialParams_[packet.materialIndex], 0);
-        commandList_->SetGraphicsRootDescriptorTable(2, materialSrvBundles_[packet.materialIndex]);
-        commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+        UpdateCameraConstants(frameIndex);
+
+        D3D12_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(width_);
+        viewport.Height = static_cast<float>(height_);
+        viewport.MinDepth = 0.0f;
+        viewport.MaxDepth = 1.0f;
+        commandList_->RSSetViewports(1, &viewport);
+
+        D3D12_RECT scissor{};
+        scissor.right = static_cast<LONG>(width_);
+        scissor.bottom = static_cast<LONG>(height_);
+        commandList_->RSSetScissorRects(1, &scissor);
+
+        commandList_->SetGraphicsRootSignature(rootSignature_.Get());
+        commandList_->SetGraphicsRootConstantBufferView(0, constantBuffers_[frameIndex]->GetGPUVirtualAddress());
+        ID3D12DescriptorHeap* descriptorHeaps[] = { srvHeap_.Get() };
+        commandList_->SetDescriptorHeaps(1, descriptorHeaps);
+        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView_);
+        commandList_->IASetIndexBuffer(&indexBufferView_);
+
+        for (const DrawPacket& packet : drawPackets)
+        {
+            const Material& material = materials_[packet.materialIndex];
+            commandList_->SetPipelineState(
+                (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
+            commandList_->SetGraphicsRoot32BitConstants(1, 16, &materialParams_[packet.materialIndex], 0);
+            commandList_->SetGraphicsRootDescriptorTable(2, materialSrvBundles_[packet.materialIndex]);
+            commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+        }
+    }
+
+    if (uiDrawData != nullptr)
+    {
+        ID3D12DescriptorHeap* uiDescriptorHeaps[] = { imguiSrvHeap_.Get() };
+        commandList_->SetDescriptorHeaps(1, uiDescriptorHeaps);
+        ImGui_ImplDX12_RenderDrawData(uiDrawData, commandList_.Get());
     }
 
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

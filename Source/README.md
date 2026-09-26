@@ -28,14 +28,14 @@ The first MMDLab milestone is intentionally small: convert a MikuMikuDance (MMD)
 ```text
 Source/
 ├─ App/
-│  └─ MmdViewer/                # Win32 entry point and GameThread ownership
+│  └─ MmdViewer/                # Win32 entry point, GameThread ownership, and the model scene
 ├─ Tools/
-│  └─ MmdCooker/                # Offline PMX static-mesh importer and binary cooker
+│  └─ MmdCooker/                # Offline .mmdl writer (reuses the shared PMX parser/cooker)
 ├─ Runtime/
 │  ├─ Core/                     # Types, errors, frame resources, channels, threading, diagnostics
-│  ├─ Asset/                    # .mmdl reading, CPU asset metadata, startup upload descriptions
+│  ├─ Asset/                    # PMX parsing/cooking, .mmdl reading, CPU asset metadata
 │  ├─ Render/                   # RenderFrame building and RenderThread work compilation
-│  └─ DX12/                     # DXGI/D3D12 resources, RhiThread, fences, presentation
+│  └─ DX12/                     # DXGI/D3D12 resources, RhiThread, imgui backends, presentation
 ├─ Shaders/                     # HLSL source files
 └─ Tests/                       # Parser, format, queue, and runtime regression tests
 ```
@@ -48,10 +48,10 @@ There is no generic RHI module in the first milestone. `Runtime/DX12` is the onl
 
 | Module | Owns | Must Not Own |
 | --- | --- | --- |
-| `App/MmdViewer` | window, input, GameThread, frame pacing policy | PMX parsing, D3D12 resource lifetime |
-| `Tools/MmdCooker` | PMX validation, convention conversion, `.mmdl` writing | window, render loop, D3D12 calls |
+| `App/MmdViewer` | window, input, GameThread, frame pacing policy, model scene | PMX format details, D3D12 resource lifetime |
+| `Tools/MmdCooker` | `.mmdl` writing | window, render loop, D3D12 calls |
 | `Runtime/Core` | frame resources, thread roles, channels, common types, diagnostics | PMX details or D3D12 calls |
-| `Runtime/Asset` | `.mmdl` reading, CPU metadata, asset handles, upload descriptions | command-list submission or GPU resource lifetime |
+| `Runtime/Asset` | PMX parsing and cooking, `.mmdl` reading, CPU metadata, asset handles | command-list submission or GPU resource lifetime |
 | `Runtime/Render` | sealed render data and API-independent work compilation | direct D3D12 object ownership |
 | `Runtime/DX12` | device, queues, fences, descriptors, GPU resources, command lists, present | PMX/VMD knowledge or scene ownership |
 
@@ -316,32 +316,26 @@ RhiThread
 
 ## Minimal Native Asset Pipeline
 
+There are two consumers of the shared PMX parser/cooker in `Runtime/Asset`:
+
 ```text
 PMX static-mesh source file
         |
         v
-MmdCooker
-  - parse and validate
-  - normalize conventions
-  - pack runtime data
+Runtime/Asset ParsePmxStaticMesh -> ConvertPmxToMmdl
         |
-        v
-.mmdl native binary
+        +--> MmdCooker (offline): WriteMmdl -> .mmdl binary
         |
-        v
-Runtime/Asset synchronous startup load
-        |
-        v
-RhiThread startup upload
-        |
-        v
-ready mesh asset handle
-        |
-        v
-RenderFrame -> RenderWorkBatch -> draw
+        +--> MmdViewer (editor, in-process): BuildMeshAsset -> CPU mesh + textures
+                    |
+                    v
+             RhiThread startup upload (and SetModel on selection change)
+                    |
+                    v
+             RenderFrame -> RenderWorkBatch -> draw
 ```
 
-`MmdCooker` version zero accepts PMX static geometry only. It explicitly rejects VMD, skeleton, skin weights, morphs, textures, and physics data until those runtime features have a tested consumer.
+The parser accepts PMX static geometry only. It explicitly rejects VMD, skeleton, skin weights, morphs, textures, and physics data until those runtime features have a tested consumer.
 
 `.mmdl` is the provisional native MMDLab asset extension. It is an implementation detail, not a public interchange format.
 
@@ -354,7 +348,7 @@ RenderFrame -> RenderWorkBatch -> draw
 - GPU payload chunks use final packed vertex and index layouts. Their exact field order, scalar type, stride, and input-layout interpretation are part of the chunk version.
 - Chunks are independently range-checked before use. The loader rejects invalid offsets, sizes, overlap, alignment, unknown required chunks, and unsupported chunk versions.
 - Large immutable chunks may be memory mapped later; the initial loader may use ordinary file reads.
-- The cooker owns conversion from PMX conventions to MMDLab conventions. Runtime code must not contain PMX-specific branches.
+- PMX parsing and the PMX-to-runtime convention conversion live in `Runtime/Asset` and are shared by the offline `MmdCooker` (which writes `.mmdl`) and the in-editor `MmdViewer` (which cooks `.pmx` directly for display). Runtime rendering code must not contain PMX-specific branches.
 
 ### First `.mmdl` Chunks
 
@@ -370,7 +364,7 @@ MaterialTable               # Minimal material constants
 
 ## Startup Upload Path
 
-The first milestone does not implement streaming. Before frame production begins, `MmdViewer` synchronously loads one `.mmdl` file through `Runtime/Asset`, creates an immutable `StartupUploadRequest`, and hands it to `RhiThread` during startup. `RhiThread` creates the GPU buffers, submits the copy work, waits for its startup fence, and publishes a ready mesh asset handle.
+The first milestone does not implement streaming. Before frame production begins, `MmdViewer` (an editor application) scans `Project/Models` — found by walking up from the executable, with the folder structure documented in `Project/Project.md` — recursively for `.pmx` files and, through `Runtime/Asset`, parses and cooks each one into a CPU-side `MeshAsset` plus decoded textures held by the GameThread's `Scene`. The selected model's mesh and textures are projected into each frame; when the selection changes, `RhiThread` rebuilds the GPU buffers and texture SRVs via `Dx12Renderer::SetModel`, waiting for in-flight GPU work before releasing the previous model's resources.
 
 This one-time bootstrap path is intentionally synchronous. Introduce `AssetToRhiUploadQueue` only when asynchronous loading or runtime asset replacement becomes a measured requirement.
 
