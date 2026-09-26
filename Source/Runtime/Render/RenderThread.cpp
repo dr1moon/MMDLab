@@ -5,10 +5,12 @@ namespace MmdLab
 RenderThread::RenderThread(
     Channel<FrameIndex, FrameResourcePool::kFrameCount>& input,
     Channel<FrameIndex, FrameResourcePool::kFrameCount>& output,
-    FrameResourcePool& pool)
+    FrameResourcePool& pool,
+    const MeshAsset& mesh)
     : input_(&input)
     , output_(&output)
     , pool_(&pool)
+    , mesh_(&mesh)
 {
 }
 
@@ -18,9 +20,8 @@ uint32_t RenderThread::Run()
     {
         FrameResource& frame = pool_->Get(*index);
 
-        // Compile: read frame.gameToRender (RenderFrame), write frame.renderToRhi
-        // (RenderWorkBatch). A no-op for the hard-coded triangle.
-        (void)frame;
+        // Compile: for a static mesh, the draw list is the mesh's immutable draw packets.
+        frame.renderToRhi.drawPackets = std::span<const DrawPacket>(mesh_->drawPackets);
 
         output_->Push(*index);
     }

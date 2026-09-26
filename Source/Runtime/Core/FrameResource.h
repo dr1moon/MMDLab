@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 
 namespace MmdLab
 {
@@ -20,10 +21,20 @@ struct RenderFrame
 {
 };
 
-// The compiled render work the RenderThread produces and the RhiThread consumes.
-// Populated with draw packets once the render milestone is reached.
+// One sub-mesh draw command: a range of the index buffer plus the material that shades it.
+struct DrawPacket
+{
+    std::uint32_t firstIndex;    // Offset into the index buffer, in indices.
+    std::uint32_t indexCount;    // Number of indices in this range (multiple of 3).
+    std::uint32_t materialIndex; // Index into the mesh asset's material array.
+};
+
+// The compiled render work the RenderThread produces and the RhiThread consumes: the
+// immutable draw list. The span points at the mesh asset's draw packets, which outlive
+// every frame.
 struct RenderWorkBatch
 {
+    std::span<const DrawPacket> drawPackets;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the

@@ -6,8 +6,9 @@
 
 namespace MmdLab
 {
-// Owns the root signature that describes the shader interface. The hard-coded triangle
-// uses an empty signature (its vertex shader reads only SV_VertexID and no constants).
+// Owns the root signature that describes the shader interface: a camera constant buffer
+// (b0), per-material shading constants (b1), a three-texture descriptor table (t0..t2), and
+// a static sampler (s0).
 class Dx12RootSignature final
 {
 public:
