@@ -1,19 +1,25 @@
-#include "App/MmdViewer/Scene.h"
+#include "App/MmdViewer/World.h"
+#include "Runtime/Asset/AssetIo.h"
+#include "Runtime/Asset/ModelRegistry.h"
 #include "App/MmdViewer/WindowsApplication.h"
 #include "Runtime/Core/Channel.h"
+#include "Runtime/Core/CpuBudget.h"
 #include "Runtime/Core/FrameResource.h"
 #include "Runtime/Core/FrameResourcePool.h"
+#include "Runtime/Core/Log.h"
 #include "Runtime/Core/Thread.h"
 #include "Runtime/Core/Ui.h"
+#include "Runtime/Core/Utf8.h"
 #include "Runtime/DX12/RhiThread.h"
 #include "Runtime/Render/RenderThread.h"
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
-#include <iostream>
+#include <format>
 #include <string>
 
 namespace
@@ -56,6 +62,15 @@ std::filesystem::path FindProjectDirectory()
 
 int wmain(const int argc, wchar_t* argv[])
 {
+    // Diagnostics are written as UTF-8; switch the console to UTF-8 so non-ASCII model names
+    // render correctly instead of as the system ANSI code page (GBK on Chinese Windows).
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
+    // The main thread is the GameThread; give it a role name so its log lines read "[GameThread]"
+    // instead of a raw OS thread id. Worker threads register themselves inside Thread::RunInternal.
+    MmdLab::RegisterThreadName("GameThread");
+
     try
     {
         // The editor loads every .pmx in the scan directory at startup; the user switches
@@ -74,12 +89,24 @@ int wmain(const int argc, wchar_t* argv[])
             scanDirectory = projectDirectory.empty() ? ExecutableDirectory() : projectDirectory / L"Models";
         }
 
-        MmdLab::Scene scene;
-        scene.LoadFromDirectory(scanDirectory);
+        // The async asset-load edges are declared before the world so they outlive both it and
+        // the I/O workers. The group starts its workers here so the startup enqueue has live
+        // consumers; LoadFromDirectory hands the request queue to the world and enqueues every
+        // level onto it.
+        MmdLab::Channel<MmdLab::LoadRequest, MmdLab::kLoadRequestCapacity> loadRequestQueue;
+        MmdLab::Channel<MmdLab::LoadResult, MmdLab::kLoadResultCapacity> loadResultQueue;
+        MmdLab::IoThreadsGroup ioGroup(MmdLab::IoWorkerCount(), loadRequestQueue, loadResultQueue);
 
-        if (scene.ModelCount() == 0)
+        MmdLab::ModelRegistry modelRegistry;
+        MmdLab::World world;
+        world.LoadFromDirectory(scanDirectory, modelRegistry, loadRequestQueue);
+
+        MmdLab::LogInfo("App", std::format("Scanning {}: {} level(s)",
+            MmdLab::WideToUtf8(scanDirectory.wstring()), world.LevelCount()));
+
+        if (world.LevelCount() == 0)
         {
-            std::wcerr << L"No .pmx models found in " << scanDirectory.wstring() << L".\n";
+            MmdLab::LogError("Asset", std::format("No .pmx models found in {}", scanDirectory.string()));
         }
 
         MmdLab::WindowsApplication application;
@@ -97,23 +124,61 @@ int wmain(const int argc, wchar_t* argv[])
         MmdLab::Channel<MmdLab::FrameIndex, MmdLab::FrameResourcePool::kFrameCount> renderToRhi;
         MmdLab::Channel<MmdLab::Win32InputMessage, MmdLab::kWin32InputQueueCapacity> inputQueue;
         MmdLab::Channel<MmdLab::UiRequest, MmdLab::kUiRequestQueueCapacity> uiQueue;
+        MmdLab::Channel<MmdLab::CameraInput, MmdLab::kCameraInputQueueCapacity> cameraQueue;
 
         application.SetInputSink(&inputQueue);
 
         MmdLab::RenderThread renderStage(gameToRender, renderToRhi, pool);
-        MmdLab::RhiThread rhiStage(renderToRhi, pool, application.GetWindowHandle(), width, height, inputQueue, uiQueue);
+        MmdLab::RhiThread rhiStage(renderToRhi, pool, application.GetWindowHandle(), width, height, inputQueue, uiQueue, cameraQueue);
 
         MmdLab::Thread renderThread(renderStage, L"RenderThread");
         MmdLab::Thread rhiThread(rhiStage, L"RhiThread");
 
+        // The RhiThread owns the device and can fail during Init() (no adapter, missing feature
+        // level, ...). Bail before the game loop so a half-built pipeline cannot deadlock waiting
+        // on a consumer that never runs.
+        if (rhiThread.ExitCode() == MmdLab::Thread::InitFailureExitCode)
+        {
+            MmdLab::LogError("App", "RhiThread failed to initialize; shutting down.");
+            renderThread.RequestStop();
+            return EXIT_FAILURE;
+        }
+
         // GameThread role: apply UI selection changes, project the scene into each frame, and
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
+        auto previousTime = std::chrono::steady_clock::now();
         while (application.ProcessMessages())
         {
+            const auto currentTime = std::chrono::steady_clock::now();
+            const float deltaTime = std::chrono::duration<float>(currentTime - previousTime).count();
+            previousTime = currentTime;
+
             while (const auto request = uiQueue.TryPop())
             {
-                scene.Select(request->selectedModel);
+                switch (request->command)
+                {
+                    case MmdLab::UiCommand::SelectLevel:
+                        world.SelectLevel(request->index);
+                        break;
+                    case MmdLab::UiCommand::SetInstanceVisible:
+                        world.SetInstanceVisible(request->index, request->visible);
+                        break;
+                }
+            }
+            while (const auto input = cameraQueue.TryPop())
+            {
+                world.GetCamera().Orbit(input->orbitDeltaX, input->orbitDeltaY);
+                world.GetCamera().Pan(input->panDeltaX, input->panDeltaY);
+                world.GetCamera().Zoom(input->zoomDelta);
+            }
+            world.GetCamera().Tick(deltaTime);
+
+            // Install any completed async loads; a completion for the selected level frames the
+            // camera and bumps the generation so the RhiThread builds its GPU resources.
+            while (auto result = loadResultQueue.TryPop())
+            {
+                world.OnLoadResult(std::move(*result));
             }
 
             const MmdLab::FrameIndex index = pool.Acquire();
@@ -121,16 +186,22 @@ int wmain(const int argc, wchar_t* argv[])
             frame.frameId = ++frameId;
 
             MmdLab::RenderFrame& renderFrame = frame.gameToRender;
-            renderFrame.mesh = scene.SelectedMesh();
-            renderFrame.textures = scene.SelectedTextures();
-            renderFrame.modelGeneration = scene.Generation();
-            renderFrame.modelNames = scene.DisplayNames();
-            renderFrame.selectedModel = static_cast<std::uint32_t>(scene.SelectedModel());
+            // Copy the selected level's instances so the frame carries an immutable snapshot
+            // of the mutable visibility flags, not a span into the world's live state.
+            const auto selectedInstances = world.SelectedInstances();
+            frame.instanceSnapshot.assign(selectedInstances.begin(), selectedInstances.end());
+            renderFrame.instances = frame.instanceSnapshot;
+            renderFrame.models = modelRegistry.Models();
+            renderFrame.levels = world.Levels();
+            renderFrame.selectedLevel = static_cast<std::uint32_t>(world.SelectedLevel());
+            renderFrame.levelGeneration = world.LevelGeneration();
+            renderFrame.camera = world.GetCamera();
 
             gameToRender.Push(index);
         }
 
         // Shut down upstream-first so the pipeline drains in order.
+        ioGroup.Stop();
         renderThread.RequestStop();
         rhiThread.RequestStop();
 
@@ -138,7 +209,7 @@ int wmain(const int argc, wchar_t* argv[])
     }
     catch (const std::exception& exception)
     {
-        std::cerr << "MMDLab Viewer failed: " << exception.what() << '\n';
+        MmdLab::LogError("App", std::format("MMDLab Viewer failed: {}", exception.what()));
         return EXIT_FAILURE;
     }
 }

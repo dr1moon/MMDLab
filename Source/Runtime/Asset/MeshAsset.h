@@ -16,6 +16,12 @@ struct MeshAsset
     std::vector<Material> materials;
     std::vector<DrawPacket> drawPackets;
     std::vector<std::string> textures; // Texture paths (the .mmdl string table).
+
+    // Model-space bounds of the vertex positions, computed once at build time so level framing
+    // and camera fits read them instead of re-scanning every vertex. Sentinel-filled for an
+    // empty mesh.
+    float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
+    float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
 };
 
 // Builds a mesh asset from .mmdl mesh data (materials and sub-meshes carry straight through).

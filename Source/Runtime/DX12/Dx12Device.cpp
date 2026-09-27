@@ -1,6 +1,10 @@
 #include "Runtime/DX12/Dx12Device.h"
 
+#include "Runtime/Core/Log.h"
+#include "Runtime/Core/Utf8.h"
+
 #include <cstdio>
+#include <format>
 #include <stdexcept>
 
 namespace MmdLab
@@ -131,5 +135,10 @@ Dx12Device::Dx12Device()
     info_.sharedSystemMemoryBytes = bestDescription.SharedSystemMemory;
     info_.featureLevel = FeatureLevelToString(featureLevel);
     info_.isHardware = IsHardware(bestDescription);
+
+    LogInfo("Dx12", std::format(
+        "Adapter '{}' ({:#06x}:{:#06x}), feature level {}, {} MiB dedicated video memory",
+        WideToUtf8(info_.adapterName), info_.vendorId, info_.deviceId,
+        WideToUtf8(info_.featureLevel), info_.dedicatedVideoMemoryBytes / (1024 * 1024)));
 }
 } // namespace MmdLab

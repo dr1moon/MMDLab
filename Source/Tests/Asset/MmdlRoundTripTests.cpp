@@ -46,6 +46,8 @@ MmdLab::MmdlMeshData MakeTestMesh()
         { 3, 3, 1 }, // second triangle -> green.
     };
     mesh.strings = { "red.png", "green.png" };
+    mesh.boundsMin[0] = 0.0f; mesh.boundsMin[1] = 0.0f; mesh.boundsMin[2] = 0.0f;
+    mesh.boundsMax[0] = 1.0f; mesh.boundsMax[1] = 1.0f; mesh.boundsMax[2] = 0.0f;
     return mesh;
 }
 } // namespace
@@ -102,4 +104,10 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
 
     MMDLAB_CHECK_EQUAL(expected.strings[0], actual.strings[0]);
     MMDLAB_CHECK_EQUAL(expected.strings[1], actual.strings[1]);
+
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        MMDLAB_CHECK_EQUAL(expected.boundsMin[axis], actual.boundsMin[axis]);
+        MMDLAB_CHECK_EQUAL(expected.boundsMax[axis], actual.boundsMax[axis]);
+    }
 }

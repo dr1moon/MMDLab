@@ -4,16 +4,35 @@
 
 namespace MmdLab
 {
-// Bounded queue capacities for the two UI edges. Input is droppable (TryPush on a full queue
-// discards a redundant mouse move), so it is larger; selection changes are rare and small.
+// Bounded queue capacities for the three UI edges. Win32 input is droppable (TryPush on a full
+// queue discards a redundant mouse move), so it is larger; selection and camera inputs are rare
+// or small per frame.
 inline constexpr std::size_t kWin32InputQueueCapacity = 256;
 inline constexpr std::size_t kUiRequestQueueCapacity = 8;
+inline constexpr std::size_t kCameraInputQueueCapacity = 8;
 
-// RhiThread -> GameThread: the user changed the selected model in the imgui combo. The
-// GameThread applies the selection to its authoritative scene and bumps the model generation.
+enum class UiCommand : std::uint32_t { SelectLevel, SetInstanceVisible };
+
+// RhiThread -> GameThread: a user edit from the imgui panel. SelectLevel changes the level
+// combo; SetInstanceVisible toggles one model of the selected level. The GameThread applies
+// it to its authoritative world state.
 struct UiRequest
 {
-    std::uint32_t selectedModel = 0;
+    UiCommand command = UiCommand::SelectLevel;
+    std::uint32_t index = 0;   // Level index (SelectLevel) or instance index (SetInstanceVisible).
+    bool visible = true;       // SetInstanceVisible: the instance's new visibility state.
+};
+
+// RhiThread -> GameThread: orbit/pan/zoom deltas the user produced this frame (mouse
+// drag/wheel while the pointer is not over an imgui widget). The GameThread applies them to the
+// world's camera before projecting it into the frame.
+struct CameraInput
+{
+    float orbitDeltaX = 0.0f;
+    float orbitDeltaY = 0.0f;
+    float panDeltaX = 0.0f;
+    float panDeltaY = 0.0f;
+    float zoomDelta = 0.0f;
 };
 
 // GameThread -> RhiThread: a Win32 message forwarded from the window message loop so the

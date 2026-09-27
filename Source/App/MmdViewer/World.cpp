@@ -1,0 +1,217 @@
+#include "App/MmdViewer/World.h"
+
+#include "Runtime/Asset/ModelRegistry.h"
+#include "Runtime/Core/Log.h"
+#include "Runtime/Core/Utf8.h"
+
+#include <algorithm>
+#include <filesystem>
+#include <format>
+#include <map>
+#include <string>
+
+namespace MmdLab
+{
+void World::LoadFromDirectory(
+    const std::filesystem::path& directory,
+    ModelRegistry& registry,
+    Channel<LoadRequest, kLoadRequestCapacity>& loadRequests)
+{
+    registry_ = &registry;
+    loadRequests_ = &loadRequests;
+
+    // Group .pmx files by their immediate parent directory so each directory becomes one
+    // level (e.g. Models/<character>/{body.pmx, hat.pmx}). A .pmx nested directly in the scan
+    // root groups under the root directory's name. Only paths are recorded here; the models
+    // load asynchronously on the I/O threads.
+    std::map<std::filesystem::path, std::vector<std::filesystem::path>> byDirectory;
+    if (std::filesystem::is_directory(directory))
+    {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(directory))
+        {
+            if (entry.is_regular_file() && entry.path().extension() == L".pmx")
+            {
+                byDirectory[entry.path().parent_path()].push_back(entry.path());
+            }
+        }
+    }
+
+    std::vector<std::vector<std::filesystem::path>> levelFiles;
+    std::size_t totalModels = 0;
+    for (auto& [dir, files] : byDirectory)
+    {
+        std::sort(files.begin(), files.end());
+
+        Level level;
+        level.name = WideToUtf8(dir.filename().wstring());
+        level.boundsMin[0] = level.boundsMin[1] = level.boundsMin[2] = 3.4e38f;
+        level.boundsMax[0] = level.boundsMax[1] = level.boundsMax[2] = -3.4e38f;
+        levels_.push_back(std::move(level));
+
+        PendingLevel pending;
+        pending.models.resize(files.size());
+        pending_.push_back(std::move(pending));
+
+        totalModels += files.size();
+        levelFiles.push_back(std::move(files));
+    }
+
+    // Reserve the model pool so installs during the render loop never reallocate the vector the
+    // renderer holds spans into across frames.
+    registry_->Reserve(totalModels);
+
+    // Enqueue every model's parse, level by level so the initially-selected level's models get a
+    // head start on the shared queue.
+    for (std::size_t levelIndex = 0; levelIndex < levelFiles.size(); ++levelIndex)
+    {
+        for (std::size_t modelSlot = 0; modelSlot < levelFiles[levelIndex].size(); ++modelSlot)
+        {
+            ModelParseRequest request;
+            request.levelIndex = levelIndex;
+            request.modelSlot = modelSlot;
+            request.path = levelFiles[levelIndex][modelSlot];
+            loadRequests_->Push(std::move(request));
+        }
+    }
+}
+
+void World::OnLoadResult(LoadResult&& result)
+{
+    std::visit(Overloaded{
+        [this](ModelParseResult& value) { OnModelParsed(value); },
+        [this](TextureDecodeResult& value) { OnTextureDecoded(value); },
+    }, result);
+}
+
+void World::OnModelParsed(ModelParseResult& result)
+{
+    PendingModel& pendingModel = pending_[result.levelIndex].models[result.modelSlot];
+    pendingModel.parsed = true;
+
+    if (!result.ok)
+    {
+        pendingModel.ok = false;
+        FinishModel(result.levelIndex, result.modelSlot);
+        return;
+    }
+
+    pendingModel.ok = true;
+    pendingModel.model = std::move(result.model);
+    pendingModel.model.textures.resize(result.texturePaths.size());
+    pendingModel.remainingTextures = result.texturePaths.size();
+
+    for (std::size_t i = 0; i < result.texturePaths.size(); ++i)
+    {
+        TextureDecodeRequest request;
+        request.levelIndex = result.levelIndex;
+        request.modelSlot = result.modelSlot;
+        request.textureIndex = i;
+        request.path = result.texturePaths[i];
+        loadRequests_->Push(std::move(request));
+    }
+
+    if (pendingModel.remainingTextures == 0)
+    {
+        FinishModel(result.levelIndex, result.modelSlot);
+    }
+}
+
+void World::OnTextureDecoded(TextureDecodeResult& result)
+{
+    PendingModel& pendingModel = pending_[result.levelIndex].models[result.modelSlot];
+    if (result.ok)
+    {
+        pendingModel.model.textures[result.textureIndex] = std::move(result.image);
+    }
+    else
+    {
+        pendingModel.model.textures[result.textureIndex] = MissingTextureImage();
+        ++pendingModel.missingTextures;
+    }
+
+    --pendingModel.remainingTextures;
+    if (pendingModel.remainingTextures == 0)
+    {
+        FinishModel(result.levelIndex, result.modelSlot);
+    }
+}
+
+void World::FinishModel(const std::size_t levelIndex, const std::size_t modelSlot)
+{
+    PendingLevel& pending = pending_[levelIndex];
+    PendingModel& pendingModel = pending.models[modelSlot];
+
+    if (pendingModel.ok)
+    {
+        if (pendingModel.missingTextures > 0)
+        {
+            LogWarning("Asset", std::format("{} missing texture(s) for {} (magenta fallback)",
+                                            pendingModel.missingTextures, pendingModel.model.name));
+        }
+
+        Level& level = levels_[levelIndex];
+        const std::string modelName = pendingModel.model.name;
+        ModelInstance instance;
+        instance.modelIndex = registry_->AddModel(std::move(pendingModel.model));
+        level.instances.push_back(instance);
+        LogInfo("Asset", std::format("Loaded model '{}'", modelName));
+
+        const MeshAsset& mesh = registry_->Models()[instance.modelIndex].mesh;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            level.boundsMin[axis] = std::min(level.boundsMin[axis], mesh.boundsMin[axis]);
+            level.boundsMax[axis] = std::max(level.boundsMax[axis], mesh.boundsMax[axis]);
+        }
+    }
+
+    ++pending.completed;
+    if (pending.completed == pending.models.size())
+    {
+        pending.loaded = true;
+        LogInfo("Asset", std::format("Level {} ready", levelIndex));
+        if (levelIndex == selectedLevel_)
+        {
+            ++levelGeneration_;
+            camera_.FrameTo(levels_[levelIndex].boundsMin, levels_[levelIndex].boundsMax);
+        }
+    }
+}
+
+void World::SelectLevel(const std::size_t index)
+{
+    if (index >= levels_.size() || index == selectedLevel_)
+    {
+        return;
+    }
+    selectedLevel_ = index;
+    if (pending_[index].loaded)
+    {
+        ++levelGeneration_;
+        camera_.FrameTo(levels_[index].boundsMin, levels_[index].boundsMax);
+    }
+    // Otherwise the level is still loading; FinishModel publishes it when its models complete.
+}
+
+void World::SetInstanceVisible(const std::size_t index, const bool visible)
+{
+    if (levels_.empty())
+    {
+        return;
+    }
+    std::vector<ModelInstance>& instances = levels_[selectedLevel_].instances;
+    if (index >= instances.size())
+    {
+        return;
+    }
+    instances[index].visible = visible;
+}
+
+std::span<const ModelInstance> World::SelectedInstances() const
+{
+    if (levels_.empty())
+    {
+        return {};
+    }
+    return levels_[selectedLevel_].instances;
+}
+} // namespace MmdLab

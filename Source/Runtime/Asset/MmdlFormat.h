@@ -82,5 +82,11 @@ struct MmdlMeshData
     std::vector<Material> materials;
     std::vector<DrawPacket> drawPackets;
     std::vector<std::string> strings; // Texture paths.
+
+    // Model-space bounds of the vertex positions. The source populates them (the PMX converter
+    // computes them; the .mmdl reader reads the cooked values) so downstream consumers never
+    // re-scan the vertices. Sentinel-filled until populated.
+    float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
+    float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
 };
 } // namespace MmdLab

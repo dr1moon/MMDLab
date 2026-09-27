@@ -1,14 +1,18 @@
 #include "Runtime/DX12/RhiThread.h"
 
+#include "Runtime/Asset/Model.h"
 #include "Runtime/DX12/Dx12Renderer.h"
 #include "Runtime/DX12/RenderDocCapture.h"
+#include "Runtime/Scene/WorldData.h"
+#include "Runtime/Core/Log.h"
 
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
 
 #include <exception>
-#include <iostream>
+#include <format>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -25,7 +29,8 @@ RhiThread::RhiThread(
     const std::uint32_t width,
     const std::uint32_t height,
     Channel<Win32InputMessage, kWin32InputQueueCapacity>& inputQueue,
-    Channel<UiRequest, kUiRequestQueueCapacity>& uiQueue)
+    Channel<UiRequest, kUiRequestQueueCapacity>& uiQueue,
+    Channel<CameraInput, kCameraInputQueueCapacity>& cameraQueue)
     : input_(&input)
     , pool_(&pool)
     , window_(window)
@@ -33,6 +38,7 @@ RhiThread::RhiThread(
     , height_(height)
     , inputQueue_(&inputQueue)
     , uiQueue_(&uiQueue)
+    , cameraQueue_(&cameraQueue)
 {
 }
 
@@ -100,17 +106,21 @@ bool RhiThread::Init()
         };
         ImGui_ImplDX12_Init(&initInfo);
 
+        LogInfo("RhiThread", std::format("initialized ({}x{})", width_, height_));
+
         return true;
     }
     catch (const std::exception& exception)
     {
-        std::cerr << "RhiThread init failed: " << exception.what() << '\n';
+        LogError("RhiThread", std::format("init failed: {}", exception.what()));
         return false;
     }
 }
 
 uint32_t RhiThread::Run()
 {
+    bool renderFailed = false;
+
     while (const auto index = input_->Pop())
     {
         FrameResource& frame = pool_->Get(*index);
@@ -130,81 +140,183 @@ uint32_t RhiThread::Run()
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Models");
-        if (batch.modelNames.empty())
+        ImGui::Begin("Levels");
+        if (batch.levels.empty())
         {
             ImGui::Text("No models found. Place .pmx files next to the viewer (or pass a directory).");
         }
         else
         {
-            std::vector<const char*> items;
-            items.reserve(batch.modelNames.size());
-            for (const std::string& name : batch.modelNames)
+            std::vector<const char*> levelItems;
+            levelItems.reserve(batch.levels.size());
+            for (const Level& level : batch.levels)
             {
-                items.push_back(name.c_str());
+                levelItems.push_back(level.name.c_str());
             }
 
-            int selected = static_cast<int>(batch.selectedModel);
-            if (ImGui::Combo("Model", &selected, items.data(), static_cast<int>(items.size())))
+            int selected = static_cast<int>(batch.selectedLevel);
+            if (ImGui::Combo("Level", &selected, levelItems.data(), static_cast<int>(levelItems.size())))
             {
-                if (selected >= 0 && selected < static_cast<int>(items.size()))
+                if (selected >= 0 && selected < static_cast<int>(levelItems.size()))
                 {
-                    uiQueue_->TryPush(UiRequest{ static_cast<std::uint32_t>(selected) });
+                    uiQueue_->TryPush(UiRequest{ UiCommand::SelectLevel, static_cast<std::uint32_t>(selected), true });
+                }
+            }
+
+            // Per-instance visibility toggles: hide props that overlap the character while
+            // inspecting a level. The checkbox reflects the frame's snapshot; a change is
+            // forwarded to the GameThread, which owns the authoritative visibility flag.
+            ImGui::Separator();
+            ImGui::Text("Models (%zu):", batch.instances.size());
+            for (std::size_t i = 0; i < batch.instances.size(); ++i)
+            {
+                const ModelInstance& instance = batch.instances[i];
+                const char* label = instance.modelIndex < batch.models.size()
+                    ? batch.models[instance.modelIndex].name.c_str()
+                    : "?";
+
+                ImGui::PushID(static_cast<int>(i));
+                bool visible = instance.visible;
+                if (ImGui::Checkbox(label, &visible))
+                {
+                    uiQueue_->TryPush(UiRequest{ UiCommand::SetInstanceVisible, static_cast<std::uint32_t>(i), visible });
+                }
+                ImGui::PopID();
+            }
+
+            // View-only debug overlays, owned by the RhiThread and passed straight to Render.
+            ImGui::Separator();
+            ImGui::Text("Visualization");
+            ImGui::Checkbox("Skeleton", &showSkeleton_);
+            ImGui::Checkbox("Skinning colors", &showSkinningColors_);
+
+            // Per-model bone hierarchy, collapsed by default: each visible model lists its
+            // skeleton as a tree so the hierarchy can be inspected alongside the 3D overlay.
+            if (ImGui::CollapsingHeader("Skeleton tree"))
+            {
+                for (std::size_t i = 0; i < batch.instances.size(); ++i)
+                {
+                    const ModelInstance& instance = batch.instances[i];
+                    if (!instance.visible || instance.modelIndex >= batch.models.size())
+                    {
+                        continue;
+                    }
+                    const Skeleton& skeleton = batch.models[instance.modelIndex].skeleton;
+
+                    ImGui::PushID(static_cast<int>(i));
+                    const std::string bonesLabel = std::format("Bones ({})", skeleton.bones.size());
+                    if (ImGui::TreeNode(bonesLabel.c_str()))
+                    {
+                        std::function<void(std::int32_t)> emit;
+                        emit = [&](std::int32_t boneIndex)
+                        {
+                            if (boneIndex < 0 || static_cast<std::size_t>(boneIndex) >= skeleton.bones.size())
+                            {
+                                return;
+                            }
+                            const Bone& bone = skeleton.bones[static_cast<std::size_t>(boneIndex)];
+                            const bool leaf = skeleton.children[static_cast<std::size_t>(boneIndex)].empty();
+
+                            ImGui::PushID(static_cast<int>(boneIndex));
+                            const bool open = leaf
+                                ? ImGui::TreeNodeEx(bone.name.c_str(), ImGuiTreeNodeFlags_Leaf)
+                                : ImGui::TreeNodeEx(bone.name.c_str());
+                            if (open && !leaf)
+                            {
+                                for (std::int32_t child : skeleton.children[static_cast<std::size_t>(boneIndex)])
+                                {
+                                    emit(child);
+                                }
+                                ImGui::TreePop();
+                            }
+                            ImGui::PopID();
+                        };
+
+                        for (std::size_t root = 0; root < skeleton.bones.size(); ++root)
+                        {
+                            if (skeleton.bones[root].parentIndex == -1)
+                            {
+                                emit(static_cast<std::int32_t>(root));
+                            }
+                        }
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
                 }
             }
         }
         ImGui::End();
 
-        // Camera control: orbit with a left-drag and zoom with the wheel, but only while the
-        // pointer is not over an imgui widget (WantCaptureMouse).
+        // Camera control: orbit with a left-drag, pan with a middle-drag, and zoom with the
+        // wheel, but only while the pointer is not over an imgui widget (WantCaptureMouse).
+        // The deltas are forwarded to the GameThread, which owns the camera and applies them
+        // before projecting the frame.
         const ImGuiIO& io = ImGui::GetIO();
         if (!io.WantCaptureMouse)
         {
-            if (io.MouseDown[0])
+            const bool orbiting = io.MouseDown[0];
+            const bool panning = io.MouseDown[2]; // Middle button.
+            const bool zooming = io.MouseWheel != 0.0f;
+            if (orbiting || panning || zooming)
             {
-                renderer_->Orbit(io.MouseDelta.x, io.MouseDelta.y);
-            }
-            if (io.MouseWheel != 0.0f)
-            {
-                renderer_->Zoom(io.MouseWheel);
+                cameraQueue_->TryPush(CameraInput{
+                    orbiting ? io.MouseDelta.x : 0.0f,
+                    orbiting ? io.MouseDelta.y : 0.0f,
+                    panning ? io.MouseDelta.x : 0.0f,
+                    panning ? io.MouseDelta.y : 0.0f,
+                    zooming ? io.MouseWheel : 0.0f });
             }
         }
 
         ImGui::Render();
         ImDrawData* drawData = ImGui::GetDrawData();
 
-        // Rebuild GPU resources only when the selected model's generation changed.
-        if (batch.mesh != nullptr && batch.modelGeneration != lastModelGeneration_)
+        if (!renderFailed)
         {
-            renderer_->SetModel(*batch.mesh, batch.textures);
-            lastModelGeneration_ = batch.modelGeneration;
-        }
+            // Build GPU resources only when the selected level's generation changed.
+            if (!batch.instances.empty() && batch.levelGeneration != lastLevelGeneration_)
+            {
+                renderer_->EnsureModelsResident(batch.instances, batch.models);
+                lastLevelGeneration_ = batch.levelGeneration;
+            }
 
-        const bool captureThisFrame =
-            captureRequested_ && capture_ != nullptr && capture_->IsAvailable();
+            const bool captureThisFrame =
+                captureRequested_ && capture_ != nullptr && capture_->IsAvailable();
 
-        if (captureThisFrame)
-        {
-            capture_->StartCapture();
-        }
+            if (captureThisFrame)
+            {
+                capture_->StartCapture();
+            }
 
-        std::uint64_t fenceValue = 0;
-        try
-        {
-            fenceValue = renderer_->Render(batch.drawPackets, drawData);
-        }
-        catch (const std::exception& exception)
-        {
-            std::cerr << "RhiThread render failed: " << exception.what() << '\n';
-        }
-        frame.gpuFenceValue = fenceValue;
+            try
+            {
+                frame.gpuFenceValue = renderer_->Render(batch.instances, batch.models, batch.camera, drawData,
+                                                        DebugViewOptions{ showSkeleton_, showSkinningColors_ });
+            }
+            catch (const std::exception& exception)
+            {
+                // A failed Render leaves the command list/allocator in an unknown state, so
+                // retrying would fail again and spin. Mark the pipeline failed, ask the window to
+                // close so the GameThread stops producing, and retire this frame immediately below.
+                LogError("RhiThread", std::format("render failed: {}", exception.what()));
+                renderFailed = true;
+                PostMessageW(window_, WM_CLOSE, 0, 0);
+                frame.gpuFenceValue = 0;
+            }
 
-        if (captureThisFrame)
+            if (captureThisFrame)
+            {
+                const bool captured = capture_->EndCapture();
+                LogInfo("RenderDoc", std::format("capture: {} {}", captured ? "ok" : "failed",
+                                                 capture_->LastCapturePath()));
+                captureRequested_ = false;
+            }
+        }
+        else
         {
-            const bool captured = capture_->EndCapture();
-            std::cerr << "capture: " << (captured ? "ok " : "failed ")
-                      << capture_->LastCapturePath() << '\n';
-            captureRequested_ = false;
+            // Degraded drain: rendering is broken. Retire frames immediately and keep consuming
+            // so the upstream stages can drain and shut down cleanly instead of deadlocking.
+            frame.gpuFenceValue = 0;
         }
 
         pendingRetirement_.push_back(*index);
@@ -225,7 +337,7 @@ uint32_t RhiThread::Run()
     }
     pendingRetirement_.clear();
 
-    return 0;
+    return renderFailed ? 1 : 0;
 }
 
 void RhiThread::Stop()

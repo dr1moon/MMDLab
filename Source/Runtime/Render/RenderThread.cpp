@@ -20,23 +20,17 @@ uint32_t RenderThread::Run()
     {
         FrameResource& frame = pool_->Get(*index);
 
-        // Compile: for a static mesh, the draw list is the selected model's immutable draw
-        // packets. Forward the model and UI projection the RhiThread needs to (re)build GPU
-        // resources and draw the imgui overlay.
+        // Compile: for a static level the draw list is the set of instances in the selected
+        // level; the RhiThread's renderer resolves each instance to its model and draws it.
+        // Forward the level and UI projection the RhiThread needs to build GPU resources and
+        // draw the imgui overlay.
         const RenderFrame& renderFrame = frame.gameToRender;
-        if (renderFrame.mesh != nullptr)
-        {
-            frame.renderToRhi.drawPackets = std::span<const DrawPacket>(renderFrame.mesh->drawPackets);
-        }
-        else
-        {
-            frame.renderToRhi.drawPackets = {};
-        }
-        frame.renderToRhi.mesh = renderFrame.mesh;
-        frame.renderToRhi.textures = renderFrame.textures;
-        frame.renderToRhi.modelGeneration = renderFrame.modelGeneration;
-        frame.renderToRhi.modelNames = renderFrame.modelNames;
-        frame.renderToRhi.selectedModel = renderFrame.selectedModel;
+        frame.renderToRhi.instances = renderFrame.instances;
+        frame.renderToRhi.models = renderFrame.models;
+        frame.renderToRhi.levels = renderFrame.levels;
+        frame.renderToRhi.selectedLevel = renderFrame.selectedLevel;
+        frame.renderToRhi.levelGeneration = renderFrame.levelGeneration;
+        frame.renderToRhi.camera = renderFrame.camera;
 
         output_->Push(*index);
     }

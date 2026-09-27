@@ -2,7 +2,6 @@
 
 #include <cstring>
 #include <fstream>
-#include <limits>
 #include <stdexcept>
 
 namespace MmdLab
@@ -70,25 +69,10 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
     metadata.materialCount = static_cast<std::uint32_t>(mesh.materials.size());
     metadata.subMeshCount = static_cast<std::uint32_t>(mesh.drawPackets.size());
     metadata.vertexStride = sizeof(MmdlVertex);
-
-    float boundsMin[3] = { std::numeric_limits<float>::infinity(),
-                           std::numeric_limits<float>::infinity(),
-                           std::numeric_limits<float>::infinity() };
-    float boundsMax[3] = { -std::numeric_limits<float>::infinity(),
-                           -std::numeric_limits<float>::infinity(),
-                           -std::numeric_limits<float>::infinity() };
-    for (const MmdlVertex& vertex : mesh.vertices)
-    {
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            boundsMin[axis] = std::min(boundsMin[axis], vertex.position[axis]);
-            boundsMax[axis] = std::max(boundsMax[axis], vertex.position[axis]);
-        }
-    }
     for (int axis = 0; axis < 3; ++axis)
     {
-        metadata.boundsMin[axis] = boundsMin[axis];
-        metadata.boundsMax[axis] = boundsMax[axis];
+        metadata.boundsMin[axis] = mesh.boundsMin[axis];
+        metadata.boundsMax[axis] = mesh.boundsMax[axis];
     }
 
     ByteWriter vertexBuffer;

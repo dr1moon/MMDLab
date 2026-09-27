@@ -1,13 +1,16 @@
 #pragma once
 
+#include "Runtime/Scene/Camera.h"
+#include "Runtime/Scene/WorldData.h"
+
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace MmdLab
 {
-struct MeshAsset;
-struct Image;
+struct Model; // Span-only in the frame projection; defined in Runtime/Asset/Model.h.
 
 // Identifies which physical frame resource (0..2) a stage is currently handling.
 // This is spatial identity: "where" in the rotating set of in-flight frames.
@@ -19,15 +22,17 @@ using FrameIndex = uint32_t;
 using FrameId = uint64_t;
 
 // The render-facing data for one frame: the sealed, immutable payload the GameThread
-// projects and the RenderThread consumes. It carries the selected model's CPU asset data and
-// the UI projection (model names + selection) that the RhiThread renders through imgui.
+// projects and the RenderThread consumes. It carries the selected level's instances plus
+// spans into the world's model pool and level list, and the UI projection (level names +
+// selection) that the RhiThread renders through imgui.
 struct RenderFrame
 {
-    const MeshAsset* mesh = nullptr;          // Selected model's CPU mesh (owned by the Scene).
-    std::span<const Image> textures;          // Selected model's CPU textures (owned by the Scene).
-    std::uint32_t modelGeneration = 0;        // Bumps on every model switch.
-    std::span<const std::string> modelNames;  // UTF-8 display names (owned by the Scene).
-    std::uint32_t selectedModel = 0;          // Index the UI combo shows.
+    std::span<const ModelInstance> instances; // Selected level's instances (snapshot, owned by the FrameResource).
+    std::span<const Model> models;            // The model pool (owned by the world).
+    std::span<const Level> levels;            // All levels (owned by the world).
+    std::uint32_t selectedLevel = 0;          // Index the UI combo shows.
+    std::uint32_t levelGeneration = 0;        // Bumps on every level switch.
+    Camera camera;                            // World camera snapshot (owned by the world).
 };
 
 // One sub-mesh draw command: a range of the index buffer plus the material that shades it.
@@ -39,16 +44,16 @@ struct DrawPacket
 };
 
 // The compiled render work the RenderThread produces and the RhiThread consumes: the
-// immutable draw list plus the model and UI projection it needs to (re)build GPU resources
-// and draw the imgui overlay.
+// selected level's instances plus the spans and UI projection the RhiThread needs to build
+// GPU resources for each referenced model and draw the imgui overlay.
 struct RenderWorkBatch
 {
-    std::span<const DrawPacket> drawPackets;
-    const MeshAsset* mesh = nullptr;
-    std::span<const Image> textures;
-    std::uint32_t modelGeneration = 0;
-    std::span<const std::string> modelNames;
-    std::uint32_t selectedModel = 0;
+    std::span<const ModelInstance> instances;
+    std::span<const Model> models;
+    std::span<const Level> levels;
+    std::uint32_t selectedLevel = 0;
+    std::uint32_t levelGeneration = 0;
+    Camera camera;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the
@@ -62,6 +67,9 @@ struct FrameResource
     // (producer -> consumer) of one edge of the data graph.
     RenderFrame gameToRender;      // GameThread produces, RenderThread consumes.
     RenderWorkBatch renderToRhi;   // RenderThread produces, RhiThread consumes.
+    // Frame-local copy of the selected level's instances, so the frame carries an immutable
+    // snapshot of the mutable visibility flags instead of a span into the world's live state.
+    std::vector<ModelInstance> instanceSnapshot;
     // Fence value RhiThread records when it submits this frame's GPU work. It tells
     // RhiThread when the frame can be retired and the resource returned to the pool.
     uint64_t gpuFenceValue = 0;

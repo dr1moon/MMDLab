@@ -8,7 +8,7 @@ namespace MmdLab
 {
 Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
 {
-    D3D12_ROOT_PARAMETER rootParameters[3]{};
+    D3D12_ROOT_PARAMETER rootParameters[4]{};
 
     // b0 (vertex + pixel): the camera constant buffer (view-projection, light, view dir).
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -37,6 +37,13 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     rootParameters[2].DescriptorTable.pDescriptorRanges = &textureRange;
     rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    // b2 (vertex): the per-instance world matrix, set per instance.
+    rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[3].Constants.ShaderRegister = 2;
+    rootParameters[3].Constants.RegisterSpace = 0;
+    rootParameters[3].Constants.Num32BitValues = 16;
+    rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // s0 (pixel): the texture sampler.
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -54,7 +61,7 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC description{};
-    description.NumParameters = 3;
+    description.NumParameters = 4;
     description.pParameters = rootParameters;
     description.NumStaticSamplers = 1;
     description.pStaticSamplers = &sampler;

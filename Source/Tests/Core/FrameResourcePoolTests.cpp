@@ -1,7 +1,9 @@
 #include "Runtime/Core/FrameResourcePool.h"
 #include "Runtime/Core/TestFramework.h"
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <stdexcept>
 #include <thread>
 
@@ -14,13 +16,13 @@ MMDLAB_TEST(Core.FrameResourcePool, StartsWithAllFramesFree)
 MMDLAB_TEST(Core.FrameResourcePool, AcquireHandsOutDistinctIndices)
 {
     MmdLab::FrameResourcePool pool;
-    const MmdLab::FrameIndex a = pool.Acquire();
-    const MmdLab::FrameIndex b = pool.Acquire();
-    const MmdLab::FrameIndex c = pool.Acquire();
-
-    MMDLAB_CHECK(a != b);
-    MMDLAB_CHECK(a != c);
-    MMDLAB_CHECK(b != c);
+    std::array<bool, MmdLab::FrameResourcePool::kFrameCount> seen{};
+    for (std::size_t i = 0; i < MmdLab::FrameResourcePool::kFrameCount; ++i)
+    {
+        const MmdLab::FrameIndex index = pool.Acquire();
+        MMDLAB_CHECK(!seen[index]);
+        seen[index] = true;
+    }
     MMDLAB_CHECK_EQUAL(0u, pool.FreeCount());
 }
 
@@ -41,8 +43,10 @@ MMDLAB_TEST(Core.FrameResourcePool, AcquireBlocksWhenExhausted)
 {
     MmdLab::FrameResourcePool pool;
     const MmdLab::FrameIndex a = pool.Acquire();
-    (void)pool.Acquire();
-    (void)pool.Acquire();
+    for (std::size_t i = 1; i < MmdLab::FrameResourcePool::kFrameCount; ++i)
+    {
+        (void)pool.Acquire();
+    }
 
     std::atomic<bool> acquired{ false };
 

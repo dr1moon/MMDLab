@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MMDLab Thread Timeline</title>
+<style>
+  :root { color-scheme: light; }
+
+  .viz-root {
+    color-scheme: light;
+    --page:    #f9f9f7;
+    --surface: #fcfcfb;
+    --ink:     #0b0b0b;
+    --ink-2:   #52514e;
+    --muted:   #898781;
+    --grid:    #e1e0d9;
+    --axis:    #c3c2b7;
+    --ring:    rgba(11,11,11,0.10);
+    --io:      #2a78d6;
+    --game:    #eb6834;
+    --rhi:     #1baf7a;
+    --start:   #b8b6ad;
+    --page-bg: #f9f9f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page:    #0d0d0d;
+      --surface: #1a1a19;
+      --ink:     #ffffff;
+      --ink-2:   #c3c2b7;
+      --muted:   #898781;
+      --grid:    #2c2c2a;
+      --axis:    #383835;
+      --ring:    rgba(255,255,255,0.10);
+      --io:      #3987e5;
+      --game:    #d95926;
+      --rhi:     #199e70;
+      --start:   #5f5e59;
+      --page-bg: #0d0d0d;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --page:    #0d0d0d;
+    --surface: #1a1a19;
+    --ink:     #ffffff;
+    --ink-2:   #c3c2b7;
+    --muted:   #898781;
+    --grid:    #2c2c2a;
+    --axis:    #383835;
+    --ring:    rgba(255,255,255,0.10);
+    --io:      #3987e5;
+    --game:    #d95926;
+    --rhi:     #199e70;
+    --start:   #5f5e59;
+    --page-bg: #0d0d0d;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .viz-root {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 20px 56px;
+  }
+
+  header { margin-bottom: 24px; }
+  .eyebrow {
+    margin: 0 0 6px;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .sub {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--ink-2);
+    font-size: 14px;
+  }
+
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .stat {
+    border: 1px solid var(--ring);
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 96px;
+  }
+  .stat .v { font-size: 20px; font-weight: 650; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 2px;
+    margin-bottom: 8px;
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+  .legend .item { display: inline-flex; align-items: center; gap: 7px; }
+  .sw { width: 14px; height: 10px; border-radius: 3px; display: inline-block; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .diamond { width: 9px; height: 9px; transform: rotate(45deg); display: inline-block; }
+
+  .chart-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--ring);
+    border-radius: 10px;
+    background: var(--surface);
+    padding: 8px 6px;
+  }
+  svg { display: block; }
+
+  .tooltip {
+    position: fixed;
+    z-index: 10;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--surface);
+    font-size: 12px;
+    line-height: 1.35;
+    padding: 6px 9px;
+    border-radius: 6px;
+    max-width: 320px;
+    opacity: 0;
+    transition: opacity 80ms ease;
+  }
+  .tooltip.on { opacity: 1; }
+
+  .table-view { margin-top: 20px; }
+  .table-view summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-2);
+    user-select: none;
+  }
+  .table-view table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 10px;
+    font-size: 13px;
+  }
+  .table-view th, .table-view td {
+    text-align: left;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--grid);
+    white-space: nowrap;
+  }
+  .table-view th { color: var(--muted); font-weight: 550; font-size: 12px; }
+  .table-view td:first-child, .table-view th:first-child { text-align: right; }
+
+  .mark { cursor: default; }
+  .bar-mark { cursor: pointer; }
+  .bar-mark:hover { opacity: 0.82; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+
+  <header>
+    <p class="eyebrow">MMDLab · one measured startup</p>
+    <h1>MMDLab Thread Timeline</h1>
+    <p class="sub">How the 15 threads spend the first ~9 seconds loading a character level &mdash; from one real run of <code>MmdViewer.exe</code> against <code>Project/Models</code>.</p>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <div class="legend">
+    <span class="item"><span class="sw" style="background:var(--io)"></span>Parse job (I/O worker)</span>
+    <span class="item"><span class="dot" style="background:var(--game)"></span>Model loaded (GameThread)</span>
+    <span class="item"><span class="diamond" style="background:var(--game)"></span>Level ready</span>
+    <span class="item"><span class="dot" style="background:var(--rhi)"></span>RHI init</span>
+    <span class="item"><span class="dot" style="background:var(--start)"></span>Thread started</span>
+  </div>
+
+  <div class="chart-wrap" id="chart"></div>
+
+  <details class="table-view">
+    <summary>Event log</summary>
+    <div style="overflow-x:auto"><table id="events"></table></div>
+  </details>
+
+  <div class="tooltip" id="tip"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- measured data (one run of MmdViewer.exe) ----
+  // parse jobs carry a real duration: start = logged finish - reported duration.
+  const parse = [
+    ["IoThreadsGroup-6","笔",35,253],["IoThreadsGroup-8","方块",35,279],["IoThreadsGroup-3","沙拉",34,402],
+    ["IoThreadsGroup-0","剑",34,1114],["IoThreadsGroup-6","显示屏",255,1124],["IoThreadsGroup-3","技能",405,1282],
+    ["IoThreadsGroup-9","凳子",36,1301],["IoThreadsGroup-5","嘟嘟可",35,1585],["IoThreadsGroup-10","大剑",36,1626],
+    ["IoThreadsGroup-9","飞鱼",1304,1646],["IoThreadsGroup-4","武器",35,2144],["IoThreadsGroup-4","武器",2148,2463],
+    ["IoThreadsGroup-0","武器",1116,3144],["IoThreadsGroup-5","派蒙",1590,4419],["IoThreadsGroup-11","人偶",35,4429],
+    ["IoThreadsGroup-1","八重神子",35,5466],["IoThreadsGroup-10","神里绫华",1628,5682],["IoThreadsGroup-9","胡桃",1649,5731],
+    ["IoThreadsGroup-4","雷电将军",2465,6008],["IoThreadsGroup-7","尼可",35,8113],["IoThreadsGroup-3","沃雅妮莎_人鱼",1287,8396],
+    ["IoThreadsGroup-8","桑多涅",280,8663],["IoThreadsGroup-6","沃雅妮莎",1127,8714],["IoThreadsGroup-2","奥黛塔",35,8864]
+  ];
+  const loaded = [3161,3174,3191,3207,3231,3241,3266,3318,3328,3341,3360,3399,3424,4466,4491,5515,5747,5774,6061,8161,8478,8739,8790,8949];
+  const loadedNames = ["笔","方块","沙拉","剑","显示屏","技能","凳子","嘟嘟可","大剑","飞鱼","武器","武器","武器","派蒙","人偶","八重神子","神里绫华","胡桃","雷电将军","尼可","沃雅妮莎_人鱼","桑多涅","沃雅妮莎","奥黛塔"];
+  const levels = [[4468,"Level 5"],[5518,"Level 0"],[5749,"Level 6"],[5776,"Level 7"],[6062,"Level 8"],[8163,"Level 2"],[8755,"Level 3"],[8792,"Level 4"],[8951,"Level 1"]];
+  const rhi = [[1861,"Adapter"],[2290,"initialized"]];
+  const started = [["IoThreadsGroup-0",4],["IoThreadsGroup-1",4],["IoThreadsGroup-2",10],["IoThreadsGroup-3",14],["IoThreadsGroup-4",17],["IoThreadsGroup-5",21],["IoThreadsGroup-6",24],["IoThreadsGroup-7",28],["IoThreadsGroup-8",31],["IoThreadsGroup-9",31],["IoThreadsGroup-10",32],["IoThreadsGroup-11",32],["RenderThread",80],["RhiThread",2294]];
+
+  const lanes = ["GameThread","RenderThread","RhiThread",
+    "IoThreadsGroup-0","IoThreadsGroup-1","IoThreadsGroup-2","IoThreadsGroup-3",
+    "IoThreadsGroup-4","IoThreadsGroup-5","IoThreadsGroup-6","IoThreadsGroup-7",
+    "IoThreadsGroup-8","IoThreadsGroup-9","IoThreadsGroup-10","IoThreadsGroup-11"];
+  const role = {};
+  role["GameThread"] = "game"; role["RenderThread"] = "start"; role["RhiThread"] = "rhi";
+  for (let i = 0; i < 12; i++) role["IoThreadsGroup-" + i] = "io";
+  const roleColor = { io: "var(--io)", game: "var(--game)", rhi: "var(--rhi)", start: "var(--start)" };
+  const laneIndex = {};
+  lanes.forEach((n, i) => { laneIndex[n] = i; });
+
+  // ---- layout ----
+  const labelW = 150, scale = 0.1, timeMax = 9000;
+  const lanePitch = 28, lanesTop = 36;
+  const width = labelW + timeMax * scale + 24;
+  const height = lanesTop + (lanes.length - 1) * lanePitch + 18;
+  const x = t => labelW + t * scale;
+  const ly = i => lanesTop + i * lanePitch;
+
+  function svg() {
+    let s = "";
+    s += '<svg viewBox="0 0 ' + width + ' ' + height + '" width="' + width + '" height="' + height + '" role="img" aria-label="Thread activity timeline">';
+    // time axis ticks + vertical gridlines
+    for (let t = 0; t <= timeMax; t += 1000) {
+      const px = x(t);
+      s += '<line x1="' + px + '" y1="' + (lanesTop - 12) + '" x2="' + px + '" y2="' + (ly(lanes.length - 1) + 12) + '" stroke="var(--grid)" stroke-width="1"/>';
+      s += '<text x="' + px + '" y="12" text-anchor="middle" font-size="11" fill="var(--muted)">' + (t / 1000) + 's</text>';
+    }
+    // lane labels + baseline
+    lanes.forEach((n, i) => {
+      const y = ly(i);
+      s += '<line x1="' + labelW + '" y1="' + y + '" x2="' + width + '" y2="' + y + '" stroke="var(--grid)" stroke-width="1"/>';
+      const c = roleColor[role[n]];
+      s += '<circle cx="' + (labelW - 6) + '" cy="' + y + '" r="3" fill="' + c + '"/>';
+      s += '<text x="' + (labelW - 14) + '" y="' + (y + 4) + '" text-anchor="end" font-size="12" fill="var(--ink-2)">' + n + "</text>";
+    });
+    // parse bars
+    parse.forEach(p => {
+      const [lane, name, a, b] = p;
+      const y = ly(laneIndex[lane]);
+      s += '<rect class="bar-mark" data-tip="' + tipHtml(name + " &mdash; parse on " + lane + "<br>" + a + "&ndash;" + b + " ms (" + (b - a) + " ms)") + '" x="' + x(a) + '" y="' + (y - 9) + '" width="' + (x(b) - x(a)) + '" height="18" rx="4" fill="var(--io)"/>';
+    });
+    // loaded model dots
+    loaded.forEach((t, i) => {
+      const y = ly(0);
+      s += '<circle class="mark" data-tip="' + tipHtml("Loaded model " + loadedNames[i] + "<br>GameThread &middot; " + t + " ms") + '" cx="' + x(t) + '" cy="' + y + '" r="4" fill="var(--game)" stroke="var(--surface)" stroke-width="2"/>';
+    });
+    // level ready diamonds
+    levels.forEach(lv => {
+      const [t, name] = lv;
+      const y = ly(0), r = 5.5;
+      s += '<path class="mark" data-tip="' + tipHtml(name + " ready<br>GameThread &middot; " + t + " ms") + '" transform="translate(' + x(t) + ',' + y + ')" d="M0 ' + (-r) + ' L' + r + ' 0 L0 ' + r + ' L' + (-r) + ' 0 Z" fill="var(--game)" stroke="var(--surface)" stroke-width="2"/>';
+    });
+    // rhi init dots
+    rhi.forEach(e => {
+      const [t, name] = e;
+      const y = ly(2);
+      s += '<circle class="mark" data-tip="' + tipHtml("RHI " + name + "<br>RhiThread &middot; " + t + " ms") + '" cx="' + x(t) + '" cy="' + y + '" r="4" fill="var(--rhi)" stroke="var(--surface)" stroke-width="2"/>';
+    });
+    // started ticks
+    started.forEach(e => {
+      const [lane, t] = e;
+      const y = ly(laneIndex[lane]);
+      s += '<circle class="mark" data-tip="' + tipHtml(lane + " started<br>" + t + " ms") + '" cx="' + x(t) + '" cy="' + y + '" r="3" fill="var(--start)"/>';
+    });
+    s += "</svg>";
+    return s;
+  }
+
+  function tipHtml(text) { return text.replace(/"/g, "&quot;"); }
+
+  function buildChart() {
+    document.getElementById("chart").innerHTML = svg();
+  }
+
+  function buildStats() {
+    const allReady = levels[levels.length - 1][0];
+    const items = [
+      ["24", "models parsed"],
+      ["9", "levels"],
+      ["15", "threads"],
+      [(allReady / 1000).toFixed(2) + " s", "to all levels ready"]
+    ];
+    document.getElementById("stats").innerHTML = items.map(it =>
+      '<div class="stat"><div class="v">' + it[0] + '</div><div class="k">' + it[1] + "</div></div>"
+    ).join("");
+  }
+
+  function buildTable() {
+    const rows = [];
+    parse.forEach(p => rows.push([p[2], p[0], "Parse", p[1], (p[3] - p[2]) + " ms"]));
+    loaded.forEach((t, i) => rows.push([t, "GameThread", "Loaded", loadedNames[i], "&mdash;"]));
+    levels.forEach(lv => rows.push([lv[0], "GameThread", "Level ready", lv[1], "&mdash;"]));
+    rhi.forEach(e => rows.push([e[0], "RhiThread", "RHI init", e[1], "&mdash;"]));
+    started.forEach(e => rows.push([e[1], e[0], "Started", "&mdash;", "&mdash;"]));
+    rows.sort((a, b) => a[0] - b[0]);
+    const head = "<thead><tr><th>ms</th><th>Thread</th><th>Event</th><th>Detail</th><th>Duration</th></tr></thead>";
+    const body = "<tbody>" + rows.map(r => "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td><td>" + r[2] + "</td><td>" + r[3] + "</td><td>" + r[4] + "</td></tr>").join("") + "</tbody>";
+    document.getElementById("events").innerHTML = head + body;
+  }
+
+  // hover tooltip
+  function bindTooltip() {
+    const tip = document.getElementById("tip");
+    const chart = document.getElementById("chart");
+    chart.addEventListener("mousemove", ev => {
+      const el = ev.target.closest ? ev.target.closest("[data-tip]") : null;
+      if (!el) { tip.classList.remove("on"); return; }
+      tip.innerHTML = el.getAttribute("data-tip");
+      tip.classList.add("on");
+      tip.style.left = (ev.clientX + 14) + "px";
+      tip.style.top = (ev.clientY + 12) + "px";
+    });
+    chart.addEventListener("mouseleave", () => tip.classList.remove("on"));
+  }
+
+  buildStats();
+  buildChart();
+  buildTable();
+  bindTooltip();
+})();
+</script>
+</body>
+</html>

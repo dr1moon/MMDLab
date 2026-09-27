@@ -6,6 +6,7 @@ MMDLab is a personal experimental project that incrementally builds a minimal Mi
 
 - Use English only for directory names, file names, source code, comments, commit messages, build output, and project documentation.
 - Keep identifiers descriptive and consistent with existing naming.
+- Prefer Unreal Engine's established vocabulary for runtime concepts that map to it (for example `World`, `Level`, `Actor`, `Component`, `AssetRegistry`), rather than inventing parallel terms.
 - In prose documentation, spell out an abbreviation at its first use and place the abbreviation in parentheses, for example `single-producer, single-consumer (SPSC)`. Do not use an unexplained abbreviation.
 - A canonical file-format identifier with no reliable expansion, such as `PMX` or `VMD`, must be introduced as a file-format identifier rather than given an invented expansion.
 

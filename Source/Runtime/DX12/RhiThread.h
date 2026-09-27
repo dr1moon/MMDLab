@@ -22,8 +22,8 @@ class RenderDocCapture;
 // The RhiThread role: owns all native D3D12 state (device, swap chain, mesh buffers,
 // pipeline) and the imgui context plus its Win32/DX12 backends. It consumes a FrameIndex from
 // the RenderThread, drains forwarded Win32 input into imgui, submits the frame's draw list and
-// the imgui overlay, presents, and returns the frame to the pool. It rebuilds GPU model
-// resources when the selected model's generation changes.
+// the imgui overlay, presents, and returns the frame to the pool. It builds GPU model
+// resources when the selected level's generation changes.
 class RhiThread final : public Runnable
 {
 public:
@@ -34,7 +34,8 @@ public:
         std::uint32_t width,
         std::uint32_t height,
         Channel<Win32InputMessage, kWin32InputQueueCapacity>& inputQueue,
-        Channel<UiRequest, kUiRequestQueueCapacity>& uiQueue);
+        Channel<UiRequest, kUiRequestQueueCapacity>& uiQueue,
+        Channel<CameraInput, kCameraInputQueueCapacity>& cameraQueue);
 
     ~RhiThread() override;
 
@@ -52,12 +53,17 @@ private:
     std::uint32_t height_;
     Channel<Win32InputMessage, kWin32InputQueueCapacity>* inputQueue_;
     Channel<UiRequest, kUiRequestQueueCapacity>* uiQueue_;
+    Channel<CameraInput, kCameraInputQueueCapacity>* cameraQueue_;
     std::unique_ptr<Dx12Renderer> renderer_;
     std::unique_ptr<RenderDocCapture> capture_;
     bool captureRequested_ = false;
     ImGuiContext* imguiContext_ = nullptr;
-    // Model generation last applied to the renderer; the sentinel forces the first upload.
-    std::uint32_t lastModelGeneration_ = 0xFFFFFFFFu;
+    // Level generation last applied to the renderer; the sentinel forces the first build.
+    std::uint32_t lastLevelGeneration_ = 0xFFFFFFFFu;
+    // View-only debug toggles the imgui panel writes and Render consumes. They stay here rather
+    // than round-tripping to the GameThread because they are renderer concerns, not world state.
+    bool showSkeleton_ = false;
+    bool showSkinningColors_ = false;
 
     // Frame indices submitted to the GPU, oldest first, awaiting fence completion before
     // their frame resources are returned to the pool.

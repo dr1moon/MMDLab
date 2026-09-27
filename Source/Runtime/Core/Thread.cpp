@@ -1,5 +1,9 @@
 #include "Runtime/Core/Thread.h"
 
+#include "Runtime/Core/Log.h"
+#include "Runtime/Core/Utf8.h"
+
+#include <format>
 #include <stdexcept>
 
 namespace MmdLab
@@ -90,19 +94,32 @@ DWORD WINAPI Thread::ThreadEntry(void* parameter)
 
 uint32_t Thread::RunInternal()
 {
+    // Register this worker's role name before Init so logs emitted during initialization (for
+    // example the RhiThread's adapter and renderer logs) read "[RhiThread]" rather than a raw OS
+    // thread id.
+    RegisterThreadName(WideToUtf8(name_));
+
     if (!runnable_->Init())
     {
-        // Initialization failed; there is no Run() or Exit() to perform.
-        SetEvent(initEvent_);
+        // Initialization failed; there is no Run() or Exit() to perform. Store the exit code
+        // before signaling so a just-constructed Thread observes it deterministically via
+        // ExitCode().
         exitCode_.store(InitFailureExitCode);
+        SetEvent(initEvent_);
+        UnregisterThreadName();
         return InitFailureExitCode;
     }
 
     SetEvent(initEvent_);
 
+    LogInfo("Core", std::format("Thread '{}' started", WideToUtf8(name_)));
+
     const uint32_t exitCode = runnable_->Run();
     runnable_->Exit();
     exitCode_.store(exitCode);
+
+    LogInfo("Core", std::format("Thread '{}' finished (code {})", WideToUtf8(name_), exitCode));
+    UnregisterThreadName();
     return exitCode;
 }
 } // namespace MmdLab

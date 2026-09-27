@@ -8,12 +8,19 @@
 
 namespace MmdLab
 {
-// Owns the fixed set of three FrameResource objects and hands out FrameIndex handles.
+// Owns the fixed set of FrameResource objects and hands out FrameIndex handles.
 //
 // GameThread acquires a free FrameIndex before writing a frame; RhiThread releases the
-// index after the GPU has finished with the frame (fence retirement). When all three
-// resources are in flight, Acquire() blocks; this is the bounded back-pressure gate that
-// stops GameThread from running more than three frames ahead of the GPU.
+// index after the GPU has finished with the frame (fence retirement). When all resources
+// are in flight, Acquire() blocks; this is the bounded back-pressure gate that stops
+// GameThread from running too far ahead of the GPU.
+//
+// The count is deliberately one larger than the swap chain's back-buffer count
+// (Dx12Renderer::kFrameCount == 2). That extra in-flight frame is what makes the renderer's
+// WaitForPreviousFrame block on the GPU, which lets RhiThread observe a completed fence and
+// retire the oldest frame. Matching the swap-chain count would let RhiThread render two
+// frames and then block in Pop before the GPU finishes either, so retirement would never run
+// and the pipeline would deadlock.
 class FrameResourcePool final
 {
 public:

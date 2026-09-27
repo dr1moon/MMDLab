@@ -1,7 +1,11 @@
 #include "Runtime/DX12/Dx12Renderer.h"
 
+#include "Runtime/Asset/Model.h"
 #include "Runtime/DX12/ShaderCompiler.h"
 #include "Runtime/DX12/Shaders.h"
+#include "Runtime/Scene/Camera.h"
+#include "Runtime/Scene/WorldData.h"
+#include "Runtime/Core/Log.h"
 
 #include "imgui_impl_dx12.h"
 
@@ -13,7 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
+#include <format>
 #include <stdexcept>
 #include <vector>
 
@@ -25,11 +29,11 @@ void DumpD3d12Messages(ID3D12Device* device)
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
     if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
     {
-        std::cerr << "(ID3D12InfoQueue unavailable)\n";
+        MmdLab::LogWarning("Dx12", "ID3D12InfoQueue unavailable");
         return;
     }
     const std::uint64_t count = infoQueue->GetNumStoredMessages();
-    std::cerr << "(InfoQueue has " << count << " messages)\n";
+    MmdLab::LogInfo("Dx12", std::format("InfoQueue has {} messages", count));
     for (std::uint64_t i = 0; i < count; ++i)
     {
         std::size_t length = 0;
@@ -37,8 +41,99 @@ void DumpD3d12Messages(ID3D12Device* device)
         std::vector<std::uint8_t> buffer(length);
         auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
         infoQueue->GetMessage(i, message, &length);
-        std::cerr << "D3D12: " << message->pDescription << '\n';
+        MmdLab::LogWarning("Dx12", std::format("D3D12: {}", message->pDescription));
     }
+}
+
+// Builds the world matrix for an instance: YXZ Euler rotation then translation, expressed with
+// row-vector DirectXMath multiplication and stored column-major so HLSL mul(world, pos) reads it
+// directly. Identity for the default zero transform.
+DirectX::XMMATRIX ComputeWorldMatrix(const MmdLab::ModelInstance& instance)
+{
+    using namespace DirectX;
+    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
+        XMConvertToRadians(instance.rotation[0]), // pitch (X).
+        XMConvertToRadians(instance.rotation[1]), // yaw (Y).
+        XMConvertToRadians(instance.rotation[2])); // roll (Z).
+    const XMMATRIX translation = XMMatrixTranslation(
+        instance.translation[0], instance.translation[1], instance.translation[2]);
+    return XMMatrixMultiply(translation, rotation);
+}
+
+// Interleaved line-list vertex for the skeleton overlay: a 3D position and a flat color.
+struct LineVertex
+{
+    float position[4];
+    float color[4];
+};
+static_assert(sizeof(LineVertex) == 32);
+
+// A per-vertex flat color, uploaded as a second vertex stream for the skinning-color view.
+struct ColorVertex
+{
+    float color[4];
+};
+static_assert(sizeof(ColorVertex) == 16);
+
+// Two line vertices per bone (head -> tail), colored by the shared per-bone debug palette so the
+// skeleton overlay matches the skinning-color view.
+std::vector<LineVertex> BuildSkeletonLines(const MmdLab::Skeleton& skeleton)
+{
+    std::vector<LineVertex> lines;
+    lines.reserve(skeleton.bones.size() * 2);
+    for (std::size_t i = 0; i < skeleton.bones.size(); ++i)
+    {
+        const MmdLab::Bone& bone = skeleton.bones[i];
+        float rgb[3];
+        MmdLab::BoneDebugColor(i, rgb);
+
+        LineVertex vertex{};
+        vertex.position[3] = 1.0f;
+        vertex.color[0] = rgb[0];
+        vertex.color[1] = rgb[1];
+        vertex.color[2] = rgb[2];
+        vertex.color[3] = 1.0f;
+
+        vertex.position[0] = bone.position[0];
+        vertex.position[1] = bone.position[1];
+        vertex.position[2] = bone.position[2];
+        lines.push_back(vertex);
+
+        vertex.position[0] = bone.tail[0];
+        vertex.position[1] = bone.tail[1];
+        vertex.position[2] = bone.tail[2];
+        lines.push_back(vertex);
+    }
+    return lines;
+}
+
+// One color per vertex: its dominant bone's palette color (gray when unskinned).
+std::vector<ColorVertex> BuildSkinningColors(const std::vector<MmdLab::SkinningVertex>& skinning)
+{
+    std::vector<ColorVertex> colors;
+    colors.reserve(skinning.size());
+    for (const MmdLab::SkinningVertex& skin : skinning)
+    {
+        ColorVertex vertex{};
+        const std::int32_t dominant = MmdLab::DominantBoneIndex(skin);
+        if (dominant >= 0)
+        {
+            float rgb[3];
+            MmdLab::BoneDebugColor(static_cast<std::size_t>(dominant), rgb);
+            vertex.color[0] = rgb[0];
+            vertex.color[1] = rgb[1];
+            vertex.color[2] = rgb[2];
+        }
+        else
+        {
+            vertex.color[0] = 0.6f;
+            vertex.color[1] = 0.6f;
+            vertex.color[2] = 0.6f;
+        }
+        vertex.color[3] = 1.0f;
+        colors.push_back(vertex);
+    }
+    return colors;
 }
 } // namespace
 
@@ -56,11 +151,13 @@ Dx12Renderer::Dx12Renderer(
     , height_(height)
 {
     rtvDescriptorSize_ = device_.Get()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    srvDescriptorSize_ = device_.Get()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     CreatePipelineState();
     CreateRenderTargetViews();
     CreateDepthBuffer();
     CreateImGuiSrvHeap();
+    CreateConstantBuffer();
 
     for (std::uint32_t i = 0; i < kFrameCount; ++i)
     {
@@ -84,18 +181,53 @@ Dx12Renderer::Dx12Renderer(
         throw std::runtime_error("Failed to create the command list.");
     }
     commandList_->Close();
+
+    // Created last, after every other throwing step, so a failed constructor cannot leak it.
+    fenceEvent_ = CreateEventW(nullptr, false, false, nullptr);
+    if (fenceEvent_ == nullptr)
+    {
+        throw std::runtime_error("Failed to create the fence wait event.");
+    }
 }
 
-void Dx12Renderer::SetModel(const MeshAsset& mesh, const std::span<const Image> textures)
+Dx12Renderer::~Dx12Renderer()
 {
-    WaitForGpuIdle();
-    ReleaseModelResources();
+    if (fenceEvent_ != nullptr)
+    {
+        CloseHandle(fenceEvent_);
+        fenceEvent_ = nullptr;
+    }
+}
 
-    materials_ = mesh.materials;
+void Dx12Renderer::EnsureModelsResident(
+    const std::span<const ModelInstance> instances,
+    const std::span<const Model> models)
+{
+    // Wait for all in-flight GPU work so the upload path below can reuse command allocator 0;
+    // this runs only on a level switch, so a full idle is acceptable.
+    WaitForGpuIdle();
+
+    for (const ModelInstance& instance : instances)
+    {
+        if (!instance.visible || instance.modelIndex >= models.size())
+        {
+            continue;
+        }
+        if (residentModels_.find(instance.modelIndex) == residentModels_.end())
+        {
+            BuildGpuModel(instance.modelIndex, models[instance.modelIndex]);
+        }
+    }
+}
+
+void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& model)
+{
+    GpuModel gpuModel;
+    gpuModel.materials = model.mesh.materials;
 
     // Project each runtime material into the pixel shader's per-material constant layout.
-    materialParams_.reserve(materials_.size());
-    for (const Material& material : materials_)
+    gpuModel.materialParams.reserve(gpuModel.materials.size());
+    for (const Material& material : gpuModel.materials)
     {
         MaterialShaderParams params{};
         for (int c = 0; c < 4; ++c) { params.baseColor[c] = material.baseColor[c]; }
@@ -103,40 +235,13 @@ void Dx12Renderer::SetModel(const MeshAsset& mesh, const std::span<const Image> 
         for (int c = 0; c < 3; ++c) { params.specular[c] = material.specularColor[c]; }
         params.shininess = material.specularStrength;
         params.sphereMode = static_cast<float>(material.sphereMode);
-        materialParams_.push_back(params);
+        gpuModel.materialParams.push_back(params);
     }
 
-    // Frame the perspective camera to the model's bounding box and reset the orbit.
-    float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
-    float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
-    for (const MmdlVertex& vertex : mesh.vertices)
-    {
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            boundsMin[axis] = std::min(boundsMin[axis], vertex.position[axis]);
-            boundsMax[axis] = std::max(boundsMax[axis], vertex.position[axis]);
-        }
-    }
-    cameraExtent_ = 0.0f;
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        cameraTarget_[axis] = (boundsMin[axis] + boundsMax[axis]) * 0.5f;
-        cameraExtent_ = std::max(cameraExtent_, boundsMax[axis] - boundsMin[axis]);
-    }
-    if (cameraExtent_ <= 0.0f)
-    {
-        cameraExtent_ = 1.0f;
-    }
-    cameraDistance_ = cameraExtent_ * 2.0f;
-    // PMX models face -Z (toward the default D3D view), so start the orbit on that side.
-    cameraYaw_ = 3.14159265f;
-    cameraPitch_ = 0.0f;
+    CreateMeshBuffers(gpuModel, model);
+    CreateTextures(gpuModel, model.textures);
 
-    CreateMeshBuffers(mesh);
-    CreateTextures(textures);
-    CreateConstantBuffer();
-
-    modelSet_ = true;
+    residentModels_.emplace(modelIndex, std::move(gpuModel));
 }
 
 void Dx12Renderer::CreatePipelineState()
@@ -203,6 +308,75 @@ void Dx12Renderer::CreatePipelineState()
 
     pipelineStateCulled_ = createPipeline(D3D12_CULL_MODE_BACK);
     pipelineStateDoubleSided_ = createPipeline(D3D12_CULL_MODE_NONE);
+
+    // Flat-color debug pipelines: the skeleton line overlay and the skinning-color view share
+    // one vertex/pixel shader pair but differ in input layout, topology, and depth writes.
+    const auto flatVertex = ShaderCompiler::Compile(FlatColorVertexShaderSource, "VSMain", "vs_5_1");
+    const auto flatPixel = ShaderCompiler::Compile(FlatColorPixelShaderSource, "PSMain", "ps_5_1");
+    const D3D12_SHADER_BYTECODE flatVsBytecode = { flatVertex->GetBufferPointer(), flatVertex->GetBufferSize() };
+    const D3D12_SHADER_BYTECODE flatPsBytecode = { flatPixel->GetBufferPointer(), flatPixel->GetBufferSize() };
+
+    const auto createFlatPipeline = [&](const D3D12_INPUT_ELEMENT_DESC* layout, const UINT elementCount,
+                                        const D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
+                                        const D3D12_DEPTH_WRITE_MASK depthWriteMask)
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+        description.pRootSignature = rootSignature_.Get();
+        description.VS = flatVsBytecode;
+        description.PS = flatPsBytecode;
+        description.BlendState.AlphaToCoverageEnable = FALSE;
+        description.BlendState.IndependentBlendEnable = FALSE;
+        for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+        {
+            description.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        }
+        description.SampleMask = UINT_MAX;
+        description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        description.RasterizerState.DepthClipEnable = TRUE;
+        description.DepthStencilState.DepthEnable = TRUE;
+        description.DepthStencilState.DepthWriteMask = depthWriteMask;
+        description.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        description.DepthStencilState.StencilEnable = FALSE;
+        description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        description.InputLayout.NumElements = elementCount;
+        description.InputLayout.pInputElementDescs = layout;
+        description.PrimitiveTopologyType = topology;
+        description.NumRenderTargets = 1;
+        description.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        description.SampleDesc.Count = 1;
+
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState;
+        const HRESULT result = device_.Get()->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&pipelineState));
+        if (FAILED(result))
+        {
+            DumpD3d12Messages(device_.Get());
+            char message[128];
+            std::snprintf(message, sizeof(message), "Failed to create a flat-color pipeline state (HRESULT 0x%08X).", static_cast<unsigned int>(result));
+            throw std::runtime_error(message);
+        }
+        return pipelineState;
+    };
+
+    // Skeleton lines: position and color interleaved in one buffer, drawn as a line list with
+    // depth reads on and depth writes off so the overlay is occluded but never occludes.
+    {
+        const D3D12_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+        pipelineStateLines_ = createFlatPipeline(layout, 2, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE, D3D12_DEPTH_WRITE_MASK_ZERO);
+    }
+
+    // Skinning colors: position from the mesh vertex buffer (slot 0) plus a flat color from a
+    // second per-vertex stream (slot 1), triangle-list, depth writes on like the toon mesh.
+    {
+        const D3D12_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+        pipelineStateSkinning_ = createFlatPipeline(layout, 2, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_DEPTH_WRITE_MASK_ALL);
+    }
 }
 
 void Dx12Renderer::CreateRenderTargetViews()
@@ -279,8 +453,10 @@ void Dx12Renderer::CreateDepthBuffer()
         dsvHeap_->GetCPUDescriptorHandleForHeapStart());
 }
 
-void Dx12Renderer::CreateMeshBuffers(const MeshAsset& mesh)
+void Dx12Renderer::CreateMeshBuffers(GpuModel& model, const Model& cpuModel)
 {
+    const MeshAsset& mesh = cpuModel.mesh;
+
     if (FAILED(commandAllocators_[0]->Reset()))
     {
         throw std::runtime_error("Failed to reset the command allocator.");
@@ -354,16 +530,37 @@ void Dx12Renderer::CreateMeshBuffers(const MeshAsset& mesh)
     };
 
     const std::size_t vertexSize = mesh.vertices.size() * sizeof(MmdlVertex);
-    vertexBuffer_ = upload(mesh.vertices.data(), vertexSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-    vertexBufferView_.BufferLocation = vertexBuffer_->GetGPUVirtualAddress();
-    vertexBufferView_.StrideInBytes = sizeof(MmdlVertex);
-    vertexBufferView_.SizeInBytes = static_cast<UINT>(vertexSize);
+    model.vertexBuffer = upload(mesh.vertices.data(), vertexSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    model.vertexView.BufferLocation = model.vertexBuffer->GetGPUVirtualAddress();
+    model.vertexView.StrideInBytes = sizeof(MmdlVertex);
+    model.vertexView.SizeInBytes = static_cast<UINT>(vertexSize);
 
     const std::size_t indexSize = mesh.indices.size() * sizeof(std::uint32_t);
-    indexBuffer_ = upload(mesh.indices.data(), indexSize, D3D12_RESOURCE_STATE_INDEX_BUFFER);
-    indexBufferView_.BufferLocation = indexBuffer_->GetGPUVirtualAddress();
-    indexBufferView_.Format = DXGI_FORMAT_R32_UINT;
-    indexBufferView_.SizeInBytes = static_cast<UINT>(indexSize);
+    model.indexBuffer = upload(mesh.indices.data(), indexSize, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+    model.indexView.BufferLocation = model.indexBuffer->GetGPUVirtualAddress();
+    model.indexView.Format = DXGI_FORMAT_R32_UINT;
+    model.indexView.SizeInBytes = static_cast<UINT>(indexSize);
+    model.totalIndexCount = static_cast<std::uint32_t>(mesh.indices.size());
+
+    // Skeleton line overlay: two interleaved position+color vertices per bone.
+    const std::vector<LineVertex> skeletonLines = BuildSkeletonLines(cpuModel.skeleton);
+    if (!skeletonLines.empty())
+    {
+        const std::size_t skeletonSize = skeletonLines.size() * sizeof(LineVertex);
+        model.skeletonVertexBuffer = upload(skeletonLines.data(), skeletonSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+        model.skeletonVertexView.BufferLocation = model.skeletonVertexBuffer->GetGPUVirtualAddress();
+        model.skeletonVertexView.StrideInBytes = sizeof(LineVertex);
+        model.skeletonVertexView.SizeInBytes = static_cast<UINT>(skeletonSize);
+        model.skeletonVertexCount = static_cast<std::uint32_t>(skeletonLines.size());
+    }
+
+    // Skinning-color second stream: one flat color per mesh vertex.
+    const std::vector<ColorVertex> skinningColors = BuildSkinningColors(cpuModel.skinning);
+    const std::size_t skinningSize = skinningColors.size() * sizeof(ColorVertex);
+    model.skinningColorBuffer = upload(skinningColors.data(), skinningSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    model.skinningColorView.BufferLocation = model.skinningColorBuffer->GetGPUVirtualAddress();
+    model.skinningColorView.StrideInBytes = sizeof(ColorVertex);
+    model.skinningColorView.SizeInBytes = static_cast<UINT>(skinningSize);
 
     if (FAILED(commandList_->Close()))
     {
@@ -383,18 +580,16 @@ void Dx12Renderer::CreateMeshBuffers(const MeshAsset& mesh)
     }
 }
 
-void Dx12Renderer::CreateTextures(const std::span<const Image> images)
+void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> images)
 {
-    srvDescriptorSize_ = device_.Get()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
     // One three-descriptor (base/toon/sphere) SRV bundle per material.
     D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
     heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDescription.NumDescriptors = static_cast<UINT>(materials_.size()) * 3;
+    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3;
     heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heapDescription.NodeMask = 0;
 
-    if (FAILED(device_.Get()->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(&srvHeap_))))
+    if (FAILED(device_.Get()->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(&model.srvHeap))))
     {
         throw std::runtime_error("Failed to create the texture SRV descriptor heap.");
     }
@@ -507,10 +702,10 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
         return texture;
     };
 
-    textures_.reserve(images.size());
+    model.textures.reserve(images.size());
     for (const Image& image : images)
     {
-        textures_.push_back(uploadTexture(image));
+        model.textures.push_back(uploadTexture(image));
     }
 
     const std::uint8_t whitePixel[4] = { 255, 255, 255, 255 };
@@ -518,7 +713,7 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
     whiteImage.width = 1;
     whiteImage.height = 1;
     whiteImage.pixels.assign(whitePixel, whitePixel + 4);
-    whiteTexture_ = uploadTexture(whiteImage);
+    model.whiteTexture = uploadTexture(whiteImage);
 
     // A 256x1 grayscale ramp used as the toon fallback for materials without a toon texture
     // (PMX shared toon, or none). Sampled along its length by the pixel shader's ramp coordinate.
@@ -534,7 +729,7 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
         rampImage.pixels[x * 4 + 2] = value;
         rampImage.pixels[x * 4 + 3] = 255;
     }
-    toonRampTexture_ = uploadTexture(rampImage);
+    model.toonRampTexture = uploadTexture(rampImage);
 
     if (FAILED(commandList_->Close()))
     {
@@ -554,8 +749,8 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
     }
 
     // Create the per-material SRV bundles (three descriptors each: base, toon, sphere).
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = srvHeap_->GetCPUDescriptorHandleForHeapStart();
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = srvHeap_->GetGPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = model.srvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = model.srvHeap->GetGPUDescriptorHandleForHeapStart();
 
     const auto createSrv = [&](ID3D12Resource* texture)
     {
@@ -573,24 +768,24 @@ void Dx12Renderer::CreateTextures(const std::span<const Image> images)
 
     // Per-material three-SRV bundle (base, toon, sphere), each falling back to a neutral
     // texture when the material omits one.
-    materialSrvBundles_.reserve(materials_.size());
-    for (const Material& material : materials_)
+    model.materialSrvBundles.reserve(model.materials.size());
+    for (const Material& material : model.materials)
     {
         ID3D12Resource* base = material.baseColorTexture >= 0
-            ? textures_[static_cast<std::size_t>(material.baseColorTexture)].Get()
-            : whiteTexture_.Get();
+            ? model.textures[static_cast<std::size_t>(material.baseColorTexture)].Get()
+            : model.whiteTexture.Get();
         ID3D12Resource* toon = material.toonTexture >= 0
-            ? textures_[static_cast<std::size_t>(material.toonTexture)].Get()
-            : toonRampTexture_.Get();
+            ? model.textures[static_cast<std::size_t>(material.toonTexture)].Get()
+            : model.toonRampTexture.Get();
         ID3D12Resource* sphere = material.sphereTexture >= 0
-            ? textures_[static_cast<std::size_t>(material.sphereTexture)].Get()
-            : whiteTexture_.Get();
+            ? model.textures[static_cast<std::size_t>(material.sphereTexture)].Get()
+            : model.whiteTexture.Get();
 
         const D3D12_GPU_DESCRIPTOR_HANDLE bundleStart = gpuHandle;
         createSrv(base);
         createSrv(toon);
         createSrv(sphere);
-        materialSrvBundles_.push_back(bundleStart);
+        model.materialSrvBundles.push_back(bundleStart);
     }
 }
 
@@ -624,79 +819,58 @@ void Dx12Renderer::CreateConstantBuffer()
     }
 }
 
-void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex)
+void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex, const Camera& camera)
 {
     using namespace DirectX;
 
-    const float cosPitch = std::cos(cameraPitch_);
-    const float eyeX = cameraTarget_[0] + cameraDistance_ * cosPitch * std::sin(cameraYaw_);
-    const float eyeY = cameraTarget_[1] + cameraDistance_ * std::sin(cameraPitch_);
-    const float eyeZ = cameraTarget_[2] + cameraDistance_ * cosPitch * std::cos(cameraYaw_);
+    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
+        XMConvertToRadians(camera.rotation[0]),
+        XMConvertToRadians(camera.rotation[1]),
+        XMConvertToRadians(camera.rotation[2]));
+    const XMMATRIX translation = XMMatrixTranslation(
+        camera.position[0], camera.position[1], camera.position[2]);
+    // Row-vector: apply rotation then translation. Inverting gives the view matrix.
+    const XMMATRIX view = XMMatrixInverse(nullptr, XMMatrixMultiply(rotation, translation));
 
-    const XMVECTOR eye = XMVectorSet(eyeX, eyeY, eyeZ, 0.0f);
-    const XMVECTOR focus = XMVectorSet(cameraTarget_[0], cameraTarget_[1], cameraTarget_[2], 0.0f);
-    const XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
-    const XMMATRIX view = XMMatrixLookAtLH(eye, focus, up);
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
-    const float nearZ = std::max(0.001f, cameraExtent_ * 0.01f);
-    const float farZ = cameraExtent_ * 100.0f + cameraDistance_;
-    const XMMATRIX projection = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.0f), aspect, nearZ, farZ);
+    const XMMATRIX projection = XMMatrixPerspectiveFovLH(
+        XMConvertToRadians(camera.fovDegrees), aspect, camera.nearPlane, camera.farPlane);
 
-    // HLSL mul(viewProjection, pos) treats pos as a column vector; DirectXMath is row-vector,
-    // and XMStoreFloat4x4 lays the matrix out in the column-major order HLSL expects, so the
-    // view*projection matrix is stored directly (no transpose).
-    XMFLOAT4X4 viewProjection;
-    XMStoreFloat4x4(&viewProjection, XMMatrixMultiply(view, projection));
+    // HLSL mul(matrix, pos) treats pos as a column vector; DirectXMath is row-vector, and
+    // XMStoreFloat4x4 lays each matrix out in the column-major order HLSL expects, so both
+    // matrices are stored directly (no transpose). See CameraConstants in Shaders.h.
+    CameraConstants constants{};
+    XMFLOAT4X4 storage;
+    XMStoreFloat4x4(&storage, XMMatrixMultiply(view, projection));
+    std::memcpy(constants.viewProjection, &storage, sizeof(storage));
+    XMStoreFloat4x4(&storage, view);
+    std::memcpy(constants.view, &storage, sizeof(storage));
 
-    // Camera constants: viewProjection (16 floats) + lightDirection + cameraDirection (24 floats),
-    // matching cbuffer CameraConstants in Shaders.h.
-    float cameraConstants[24] = {};
-    std::memcpy(cameraConstants, &viewProjection, sizeof(viewProjection));
-    cameraConstants[16] = -0.3f; // lightDirection.xyz (fixed key light).
-    cameraConstants[17] = -0.8f;
-    cameraConstants[18] = -0.6f;
-    float forwardX = cameraTarget_[0] - eyeX;
-    float forwardY = cameraTarget_[1] - eyeY;
-    float forwardZ = cameraTarget_[2] - eyeZ;
-    const float forwardLength = std::sqrt(forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
-    if (forwardLength > 1e-6f)
-    {
-        forwardX /= forwardLength;
-        forwardY /= forwardLength;
-        forwardZ /= forwardLength;
-    }
-    cameraConstants[20] = forwardX; // cameraDirection.xyz (view forward).
-    cameraConstants[21] = forwardY;
-    cameraConstants[22] = forwardZ;
+    constants.lightDirection[0] = -0.3f; // Fixed key light (the shader normalizes it).
+    constants.lightDirection[1] = -0.8f;
+    constants.lightDirection[2] = -0.6f;
 
-    std::memcpy(constantBufferMapped_[frameIndex], cameraConstants, sizeof(cameraConstants));
-}
+    // Camera forward (local +Z in world space), for the pixel shader's view direction.
+    const XMVECTOR forward = XMVector3Rotate(
+        XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f),
+        XMQuaternionRotationRollPitchYaw(
+            XMConvertToRadians(camera.rotation[0]),
+            XMConvertToRadians(camera.rotation[1]),
+            XMConvertToRadians(camera.rotation[2])));
+    constants.cameraDirection[0] = XMVectorGetX(forward);
+    constants.cameraDirection[1] = XMVectorGetY(forward);
+    constants.cameraDirection[2] = XMVectorGetZ(forward);
+    constants.cameraDirection[3] = 0.0f;
 
-void Dx12Renderer::Orbit(const float deltaX, const float deltaY)
-{
-    cameraYaw_ += deltaX * 0.005f;
-    cameraPitch_ -= deltaY * 0.005f;
-    const float limit = 1.5533f; // ~89 degrees; keeps the up vector from degenerating at the poles.
-    cameraPitch_ = std::max(-limit, std::min(limit, cameraPitch_));
-}
-
-void Dx12Renderer::Zoom(const float wheelDelta)
-{
-    cameraDistance_ *= std::exp(-wheelDelta * 0.1f);
-    const float minimum = cameraExtent_ * 0.05f;
-    const float maximum = cameraExtent_ * 50.0f;
-    cameraDistance_ = std::max(minimum, std::min(maximum, cameraDistance_));
+    std::memcpy(constantBufferMapped_[frameIndex], &constants, sizeof(constants));
 }
 
 void Dx12Renderer::WaitForPreviousFrame(const std::uint32_t frameIndex)
 {
     if (fences_[frameIndex]->GetCompletedValue() < fenceValues_[frameIndex])
     {
-        const HANDLE event = CreateEventW(nullptr, false, false, nullptr);
-        fences_[frameIndex]->SetEventOnCompletion(fenceValues_[frameIndex], event);
-        WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
+        fences_[frameIndex]->SetEventOnCompletion(fenceValues_[frameIndex], fenceEvent_);
+        WaitForSingleObject(fenceEvent_, INFINITE);
     }
 }
 
@@ -708,10 +882,8 @@ void Dx12Renderer::WaitForGpuIdle()
     }
     if (frameFence_->GetCompletedValue() < frameFenceValue_)
     {
-        const HANDLE event = CreateEventW(nullptr, false, false, nullptr);
-        frameFence_->SetEventOnCompletion(frameFenceValue_, event);
-        WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
+        frameFence_->SetEventOnCompletion(frameFenceValue_, fenceEvent_);
+        WaitForSingleObject(fenceEvent_, INFINITE);
     }
 }
 
@@ -755,29 +927,12 @@ void Dx12Renderer::FreeImGuiSrvDescriptor(const D3D12_CPU_DESCRIPTOR_HANDLE cpu,
     imguiSrvFreeIndices_.push_back(index);
 }
 
-void Dx12Renderer::ReleaseModelResources()
-{
-    materialSrvBundles_.clear();
-    materialParams_.clear();
-    materials_ = {};
-    textures_.clear();
-    whiteTexture_.Reset();
-    toonRampTexture_.Reset();
-    srvHeap_.Reset();
-    for (std::uint32_t i = 0; i < kFrameCount; ++i)
-    {
-        constantBuffers_[i].Reset();
-        constantBufferMapped_[i] = nullptr;
-    }
-    indexBuffer_.Reset();
-    vertexBuffer_.Reset();
-    vertexBufferView_ = {};
-    indexBufferView_ = {};
-    srvDescriptorSize_ = 0;
-    modelSet_ = false;
-}
-
-std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets, ImDrawData* const uiDrawData)
+std::uint64_t Dx12Renderer::Render(
+    const std::span<const ModelInstance> instances,
+    const std::span<const Model> models,
+    const Camera& camera,
+    ImDrawData* const uiDrawData,
+    const DebugViewOptions options)
 {
     const std::uint32_t frameIndex = swapChain_.CurrentBackBufferIndex();
 
@@ -810,9 +965,9 @@ std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets
     commandList_->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    if (modelSet_)
+    if (!instances.empty())
     {
-        UpdateCameraConstants(frameIndex);
+        UpdateCameraConstants(frameIndex, camera);
 
         D3D12_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(width_);
@@ -828,20 +983,67 @@ std::uint64_t Dx12Renderer::Render(const std::span<const DrawPacket> drawPackets
 
         commandList_->SetGraphicsRootSignature(rootSignature_.Get());
         commandList_->SetGraphicsRootConstantBufferView(0, constantBuffers_[frameIndex]->GetGPUVirtualAddress());
-        ID3D12DescriptorHeap* descriptorHeaps[] = { srvHeap_.Get() };
-        commandList_->SetDescriptorHeaps(1, descriptorHeaps);
         commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView_);
-        commandList_->IASetIndexBuffer(&indexBufferView_);
 
-        for (const DrawPacket& packet : drawPackets)
+        for (const ModelInstance& instance : instances)
         {
-            const Material& material = materials_[packet.materialIndex];
-            commandList_->SetPipelineState(
-                (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
-            commandList_->SetGraphicsRoot32BitConstants(1, 16, &materialParams_[packet.materialIndex], 0);
-            commandList_->SetGraphicsRootDescriptorTable(2, materialSrvBundles_[packet.materialIndex]);
-            commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+            if (!instance.visible || instance.modelIndex >= models.size())
+            {
+                continue;
+            }
+            const auto resident = residentModels_.find(instance.modelIndex);
+            if (resident == residentModels_.end())
+            {
+                continue; // Not resident; built on the level switch before this frame.
+            }
+
+            const Model& cpuModel = models[instance.modelIndex];
+            const GpuModel& gpuModel = resident->second;
+
+            // Per-instance world transform, stored column-major for HLSL mul(world, pos).
+            DirectX::XMFLOAT4X4 worldStorage;
+            DirectX::XMStoreFloat4x4(&worldStorage, ComputeWorldMatrix(instance));
+            commandList_->SetGraphicsRoot32BitConstants(3, 16, &worldStorage, 0);
+
+            if (options.showSkinningColors)
+            {
+                // Skinning-color view: shade the whole mesh by each vertex's dominant bone,
+                // ignoring materials, so position comes from the mesh buffer and color from a
+                // second per-vertex stream.
+                ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
+                commandList_->SetDescriptorHeaps(1, descriptorHeaps);
+                D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningColorView };
+                commandList_->IASetVertexBuffers(0, 2, vertexViews);
+                commandList_->IASetIndexBuffer(&gpuModel.indexView);
+                commandList_->SetPipelineState(pipelineStateSkinning_.Get());
+                commandList_->DrawIndexedInstanced(gpuModel.totalIndexCount, 1, 0, 0, 0);
+            }
+            else
+            {
+                ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
+                commandList_->SetDescriptorHeaps(1, descriptorHeaps);
+                commandList_->IASetVertexBuffers(0, 1, &gpuModel.vertexView);
+                commandList_->IASetIndexBuffer(&gpuModel.indexView);
+
+                for (const DrawPacket& packet : cpuModel.mesh.drawPackets)
+                {
+                    const Material& material = gpuModel.materials[packet.materialIndex];
+                    commandList_->SetPipelineState(
+                        (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
+                    commandList_->SetGraphicsRoot32BitConstants(1, 16, &gpuModel.materialParams[packet.materialIndex], 0);
+                    commandList_->SetGraphicsRootDescriptorTable(2, gpuModel.materialSrvBundles[packet.materialIndex]);
+                    commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+                }
+            }
+
+            if (options.showSkeleton && gpuModel.skeletonVertexCount > 0)
+            {
+                commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+                commandList_->IASetVertexBuffers(0, 1, &gpuModel.skeletonVertexView);
+                commandList_->SetPipelineState(pipelineStateLines_.Get());
+                commandList_->DrawInstanced(gpuModel.skeletonVertexCount, 1, 0, 0);
+                commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            }
         }
     }
 

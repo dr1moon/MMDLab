@@ -160,7 +160,21 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             subMeshChunk = &descriptor;
             break;
         case MmdlChunkType::MeshMetadata:
-            break; // Counts are re-derived from the buffer chunks below.
+        {
+            // The buffer chunks carry the counts; the metadata carries the cooked bounds, the
+            // one per-mesh value not derivable from the buffers.
+            if (descriptor.size >= sizeof(MmdlMeshMetadata))
+            {
+                MmdlMeshMetadata metadata{};
+                std::memcpy(&metadata, chunk, sizeof(metadata));
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    mesh.boundsMin[axis] = metadata.boundsMin[axis];
+                    mesh.boundsMax[axis] = metadata.boundsMax[axis];
+                }
+            }
+            break;
+        }
         }
     }
 

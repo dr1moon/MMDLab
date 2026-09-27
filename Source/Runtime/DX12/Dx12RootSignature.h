@@ -7,8 +7,8 @@
 namespace MmdLab
 {
 // Owns the root signature that describes the shader interface: a camera constant buffer
-// (b0), per-material shading constants (b1), a three-texture descriptor table (t0..t2), and
-// a static sampler (s0).
+// (b0), per-material shading constants (b1), a three-texture descriptor table (t0..t2),
+// per-instance world constants (b2), and a static sampler (s0).
 class Dx12RootSignature final
 {
 public:

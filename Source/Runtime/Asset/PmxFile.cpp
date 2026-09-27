@@ -2,11 +2,13 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace MmdLab
 {
@@ -200,16 +202,50 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         // Additional UVs (a vec4 each).
         reader.Skip(static_cast<std::size_t>(additionalUvCount) * 4 * 4);
 
-        // Skinning is variable-length; skip it for static geometry.
+        // Skinning: read up to four bone indices and their weights. SDEF is read as BDEF2 with
+        // its spherical C/R0/R1 dropped, the standard linear-blend-skinning approximation.
         const std::uint8_t skinningType = reader.ReadU8();
         switch (skinningType)
         {
-        case 0: reader.Skip(static_cast<std::size_t>(boneIndexSize) * 1); break;         // BDEF1.
-        case 1: reader.Skip(static_cast<std::size_t>(boneIndexSize) * 2 + 4); break;     // BDEF2.
-        case 2: reader.Skip(static_cast<std::size_t>(boneIndexSize) * 4 + 16); break;    // BDEF4.
-        case 3: reader.Skip(static_cast<std::size_t>(boneIndexSize) * 4 + 52); break;    // SDEF.
-        case 4: reader.Skip(static_cast<std::size_t>(boneIndexSize) * 4 + 16); break;    // QDEF.
-        default: throw std::runtime_error("Unknown skinning type.");
+        case 0: // BDEF1: one bone, implicit weight 1.
+            vertex.boneIndices[0] = ReadIndex(reader, boneIndexSize);
+            vertex.boneWeights[0] = 1.0f;
+            break;
+        case 1: // BDEF2: two bones, one weight (the second is 1 - first).
+            vertex.boneIndices[0] = ReadIndex(reader, boneIndexSize);
+            vertex.boneIndices[1] = ReadIndex(reader, boneIndexSize);
+            vertex.boneWeights[0] = reader.ReadF32();
+            vertex.boneWeights[1] = 1.0f - vertex.boneWeights[0];
+            break;
+        case 2: // BDEF4: four bones and weights.
+            for (int bone = 0; bone < 4; ++bone)
+            {
+                vertex.boneIndices[bone] = ReadIndex(reader, boneIndexSize);
+            }
+            for (int bone = 0; bone < 4; ++bone)
+            {
+                vertex.boneWeights[bone] = reader.ReadF32();
+            }
+            break;
+        case 3: // SDEF: read as BDEF2, dropping the spherical C/R0/R1.
+            vertex.boneIndices[0] = ReadIndex(reader, boneIndexSize);
+            vertex.boneIndices[1] = ReadIndex(reader, boneIndexSize);
+            vertex.boneWeights[0] = reader.ReadF32();
+            vertex.boneWeights[1] = 1.0f - vertex.boneWeights[0];
+            reader.Skip(36); // SDEF-C, SDEF-R0, SDEF-R1 (9 floats).
+            break;
+        case 4: // QDEF (PMX 2.1): four bones and weights, same layout as BDEF4.
+            for (int bone = 0; bone < 4; ++bone)
+            {
+                vertex.boneIndices[bone] = ReadIndex(reader, boneIndexSize);
+            }
+            for (int bone = 0; bone < 4; ++bone)
+            {
+                vertex.boneWeights[bone] = reader.ReadF32();
+            }
+            break;
+        default:
+            throw std::runtime_error("Unknown skinning type.");
         }
 
         reader.Skip(4); // edge scale.
@@ -273,19 +309,103 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         const std::uint8_t toonFlag = reader.ReadU8();
         if (toonFlag == 0)
         {
-            reader.Skip(1); // shared toon index (unused).
+            // A custom toon texture, referenced by a texture index.
+            material.toonTextureIndex = ReadIndex(reader, textureIndexSize);
         }
         else
         {
-            material.toonTextureIndex = ReadIndex(reader, textureIndexSize);
+            // A shared system toon (index 0-9 into toon01.bmp..toon10.bmp); unused for now.
+            reader.Skip(1);
         }
 
         (void)ReadString(reader, utf8); // memo.
-        material.surfaceCount = reader.ReadI32();
+        material.indexCount = reader.ReadI32();
         mesh.materials.push_back(material);
     }
 
-    // Validate: each triangle index is in range, and material surface counts cover the
+    // Bones.
+    const std::uint32_t boneCount = reader.ReadU32();
+    mesh.bones.reserve(boneCount);
+    for (std::uint32_t i = 0; i < boneCount; ++i)
+    {
+        PmxBone bone;
+        bone.name = ReadString(reader, utf8);
+        bone.nameEn = ReadString(reader, utf8);
+        bone.position[0] = reader.ReadF32();
+        bone.position[1] = reader.ReadF32();
+        bone.position[2] = reader.ReadF32();
+        bone.parentIndex = ReadIndex(reader, boneIndexSize);
+        bone.deformLayer = reader.ReadI32();
+        bone.flags = reader.ReadU16();
+
+        if ((bone.flags & PmxBoneFlags::TailIndex) != 0)
+        {
+            bone.tailIndex = ReadIndex(reader, boneIndexSize);
+        }
+        else
+        {
+            bone.tailOffset[0] = reader.ReadF32();
+            bone.tailOffset[1] = reader.ReadF32();
+            bone.tailOffset[2] = reader.ReadF32();
+        }
+
+        if ((bone.flags & (PmxBoneFlags::InheritRotation | PmxBoneFlags::InheritTranslation)) != 0)
+        {
+            bone.inheritParentIndex = ReadIndex(reader, boneIndexSize);
+            bone.inheritInfluence = reader.ReadF32();
+        }
+
+        if ((bone.flags & PmxBoneFlags::FixedAxis) != 0)
+        {
+            bone.fixedAxis[0] = reader.ReadF32();
+            bone.fixedAxis[1] = reader.ReadF32();
+            bone.fixedAxis[2] = reader.ReadF32();
+        }
+
+        if ((bone.flags & PmxBoneFlags::LocalCoordinate) != 0)
+        {
+            bone.localX[0] = reader.ReadF32();
+            bone.localX[1] = reader.ReadF32();
+            bone.localX[2] = reader.ReadF32();
+            bone.localZ[0] = reader.ReadF32();
+            bone.localZ[1] = reader.ReadF32();
+            bone.localZ[2] = reader.ReadF32();
+        }
+
+        if ((bone.flags & PmxBoneFlags::ExternalParentDeform) != 0)
+        {
+            bone.externalParentKey = reader.ReadI32();
+        }
+
+        if ((bone.flags & PmxBoneFlags::Ik) != 0)
+        {
+            bone.ikTargetIndex = ReadIndex(reader, boneIndexSize);
+            bone.ikLoopCount = reader.ReadI32();
+            bone.ikLimitAngle = reader.ReadF32();
+            const std::int32_t linkCount = reader.ReadI32();
+            bone.ikLinks.reserve(static_cast<std::size_t>(linkCount));
+            for (std::int32_t link = 0; link < linkCount; ++link)
+            {
+                PmxIkLink ikLink;
+                ikLink.boneIndex = ReadIndex(reader, boneIndexSize);
+                ikLink.hasLimit = reader.ReadU8() != 0;
+                if (ikLink.hasLimit)
+                {
+                    ikLink.limitMin[0] = reader.ReadF32();
+                    ikLink.limitMin[1] = reader.ReadF32();
+                    ikLink.limitMin[2] = reader.ReadF32();
+                    ikLink.limitMax[0] = reader.ReadF32();
+                    ikLink.limitMax[1] = reader.ReadF32();
+                    ikLink.limitMax[2] = reader.ReadF32();
+                }
+                bone.ikLinks.push_back(std::move(ikLink));
+            }
+        }
+
+        mesh.bones.push_back(std::move(bone));
+    }
+
+    // Validate: each triangle index is in range, and the materials' index counts cover the
     // whole index buffer exactly.
     for (const std::uint32_t index : mesh.indices)
     {
@@ -295,14 +415,14 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         }
     }
 
-    std::uint32_t totalSurfaceCount = 0;
+    std::uint32_t totalIndexCount = 0;
     for (const PmxMaterial& material : mesh.materials)
     {
-        totalSurfaceCount += static_cast<std::uint32_t>(material.surfaceCount);
+        totalIndexCount += static_cast<std::uint32_t>(material.indexCount);
     }
-    if (totalSurfaceCount != indexCount)
+    if (totalIndexCount != indexCount)
     {
-        throw std::runtime_error("Material surface counts do not sum to the index count.");
+        throw std::runtime_error("Material index counts do not sum to the vertex index count.");
     }
 
     return mesh;
@@ -327,6 +447,13 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         out.uv[0] = vertex.uv[0];
         out.uv[1] = vertex.uv[1];
         mesh.vertices.push_back(out);
+
+        // Union the bounds while converting, so the runtime asset never re-scans the vertices.
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            mesh.boundsMin[axis] = std::min(mesh.boundsMin[axis], vertex.position[axis]);
+            mesh.boundsMax[axis] = std::max(mesh.boundsMax[axis], vertex.position[axis]);
+        }
     }
 
     mesh.indices = pmx.indices;
@@ -367,7 +494,7 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
     {
         DrawPacket packet{};
         packet.firstIndex = firstIndex;
-        packet.indexCount = static_cast<std::uint32_t>(pmx.materials[i].surfaceCount);
+        packet.indexCount = static_cast<std::uint32_t>(pmx.materials[i].indexCount);
         packet.materialIndex = i;
         firstIndex += packet.indexCount;
         mesh.drawPackets.push_back(packet);
