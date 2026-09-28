@@ -31,6 +31,8 @@ uint32_t RenderThread::Run()
         frame.renderToRhi.selectedLevel = renderFrame.selectedLevel;
         frame.renderToRhi.levelGeneration = renderFrame.levelGeneration;
         frame.renderToRhi.camera = renderFrame.camera;
+        frame.renderToRhi.bonePalette = renderFrame.bonePalette;
+        frame.renderToRhi.bonePaletteOffsets = renderFrame.bonePaletteOffsets;
 
         output_->Push(*index);
     }

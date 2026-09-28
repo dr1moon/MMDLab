@@ -3,6 +3,8 @@
 #include "Runtime/Scene/Camera.h"
 #include "Runtime/Scene/WorldData.h"
 
+#include <DirectXMath.h>
+
 #include <cstdint>
 #include <span>
 #include <string>
@@ -33,14 +35,21 @@ struct RenderFrame
     std::uint32_t selectedLevel = 0;          // Index the UI combo shows.
     std::uint32_t levelGeneration = 0;        // Bumps on every level switch.
     Camera camera;                            // World camera snapshot (owned by the world).
+    // Skinning palettes, concatenated in model-index order and sliced by `bonePaletteOffsets`
+    // (size modelCount + 1). Owned by the FrameResource; the renderer reads per-model ranges.
+    std::span<const DirectX::XMFLOAT4X4> bonePalette;
+    std::span<const std::uint32_t> bonePaletteOffsets;
 };
 
-// One sub-mesh draw command: a range of the index buffer plus the material that shades it.
+// One sub-mesh draw command: a range of the index buffer plus the material that shades it and
+// the slice of the skin-reference-bone table its vertices remap into.
 struct DrawPacket
 {
     std::uint32_t firstIndex;    // Offset into the index buffer, in indices.
     std::uint32_t indexCount;    // Number of indices in this range (multiple of 3).
     std::uint32_t materialIndex; // Index into the mesh asset's material array.
+    std::uint32_t refBoneOffset; // Offset into the mesh asset's skin-reference-bone table.
+    std::uint32_t refBoneCount;  // Number of skin-reference bones this submesh uses (<= 256).
 };
 
 // The compiled render work the RenderThread produces and the RhiThread consumes: the
@@ -54,6 +63,8 @@ struct RenderWorkBatch
     std::uint32_t selectedLevel = 0;
     std::uint32_t levelGeneration = 0;
     Camera camera;
+    std::span<const DirectX::XMFLOAT4X4> bonePalette;
+    std::span<const std::uint32_t> bonePaletteOffsets;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the
@@ -70,6 +81,10 @@ struct FrameResource
     // Frame-local copy of the selected level's instances, so the frame carries an immutable
     // snapshot of the mutable visibility flags instead of a span into the world's live state.
     std::vector<ModelInstance> instanceSnapshot;
+    // Frame-local skinning palettes (concatenated in model-index order) plus their per-model
+    // start offsets, so the frame carries an immutable snapshot of the GameThread's evaluation.
+    std::vector<DirectX::XMFLOAT4X4> bonePaletteSnapshot;
+    std::vector<std::uint32_t> bonePaletteOffsetSnapshot;
     // Fence value RhiThread records when it submits this frame's GPU work. It tells
     // RhiThread when the frame can be retired and the resource returned to the pool.
     uint64_t gpuFenceValue = 0;

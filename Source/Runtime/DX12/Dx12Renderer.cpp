@@ -59,82 +59,6 @@ DirectX::XMMATRIX ComputeWorldMatrix(const MmdLab::ModelInstance& instance)
         instance.translation[0], instance.translation[1], instance.translation[2]);
     return XMMatrixMultiply(translation, rotation);
 }
-
-// Interleaved line-list vertex for the skeleton overlay: a 3D position and a flat color.
-struct LineVertex
-{
-    float position[4];
-    float color[4];
-};
-static_assert(sizeof(LineVertex) == 32);
-
-// A per-vertex flat color, uploaded as a second vertex stream for the skinning-color view.
-struct ColorVertex
-{
-    float color[4];
-};
-static_assert(sizeof(ColorVertex) == 16);
-
-// Two line vertices per bone (head -> tail), colored by the shared per-bone debug palette so the
-// skeleton overlay matches the skinning-color view.
-std::vector<LineVertex> BuildSkeletonLines(const MmdLab::Skeleton& skeleton)
-{
-    std::vector<LineVertex> lines;
-    lines.reserve(skeleton.bones.size() * 2);
-    for (std::size_t i = 0; i < skeleton.bones.size(); ++i)
-    {
-        const MmdLab::Bone& bone = skeleton.bones[i];
-        float rgb[3];
-        MmdLab::BoneDebugColor(i, rgb);
-
-        LineVertex vertex{};
-        vertex.position[3] = 1.0f;
-        vertex.color[0] = rgb[0];
-        vertex.color[1] = rgb[1];
-        vertex.color[2] = rgb[2];
-        vertex.color[3] = 1.0f;
-
-        vertex.position[0] = bone.position[0];
-        vertex.position[1] = bone.position[1];
-        vertex.position[2] = bone.position[2];
-        lines.push_back(vertex);
-
-        vertex.position[0] = bone.tail[0];
-        vertex.position[1] = bone.tail[1];
-        vertex.position[2] = bone.tail[2];
-        lines.push_back(vertex);
-    }
-    return lines;
-}
-
-// One color per vertex: its dominant bone's palette color (gray when unskinned).
-std::vector<ColorVertex> BuildSkinningColors(const std::vector<MmdLab::SkinningVertex>& skinning)
-{
-    std::vector<ColorVertex> colors;
-    colors.reserve(skinning.size());
-    for (const MmdLab::SkinningVertex& skin : skinning)
-    {
-        ColorVertex vertex{};
-        const std::int32_t dominant = MmdLab::DominantBoneIndex(skin);
-        if (dominant >= 0)
-        {
-            float rgb[3];
-            MmdLab::BoneDebugColor(static_cast<std::size_t>(dominant), rgb);
-            vertex.color[0] = rgb[0];
-            vertex.color[1] = rgb[1];
-            vertex.color[2] = rgb[2];
-        }
-        else
-        {
-            vertex.color[0] = 0.6f;
-            vertex.color[1] = 0.6f;
-            vertex.color[2] = 0.6f;
-        }
-        vertex.color[3] = 1.0f;
-        colors.push_back(vertex);
-    }
-    return colors;
-}
 } // namespace
 
 namespace MmdLab
@@ -227,7 +151,7 @@ void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& mode
 
     // Project each runtime material into the pixel shader's per-material constant layout.
     gpuModel.materialParams.reserve(gpuModel.materials.size());
-    for (const Material& material : gpuModel.materials)
+    for (const MMDToonMaterial& material : gpuModel.materials)
     {
         MaterialShaderParams params{};
         for (int c = 0; c < 4; ++c) { params.baseColor[c] = material.baseColor[c]; }
@@ -240,6 +164,86 @@ void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& mode
 
     CreateMeshBuffers(gpuModel, model);
     CreateTextures(gpuModel, model.textures);
+
+    // Bone matrices: double-buffered default-heap structured buffers, each with an SRV in the
+    // trailing slots of the model's SRV heap, plus a persistent upload staging buffer the CPU
+    // writes before the GPU copies it into the default buffer each frame.
+    const UINT materialSrvCount = static_cast<UINT>(gpuModel.materials.size()) * 3;
+    const std::uint32_t boneCount = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(model.skeleton.bones.size()));
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = gpuModel.srvHeap->GetCPUDescriptorHandleForHeapStart();
+    srvCpu.ptr += static_cast<SIZE_T>(materialSrvCount) * srvDescriptorSize_;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = gpuModel.srvHeap->GetGPUDescriptorHandleForHeapStart();
+    srvGpu.ptr += static_cast<SIZE_T>(materialSrvCount) * srvDescriptorSize_;
+
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Width = static_cast<UINT64>(boneCount) * sizeof(DirectX::XMFLOAT4X4);
+    description.Height = 1;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.SampleDesc.Count = 1;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for (std::uint32_t i = 0; i < kFrameCount; ++i)
+    {
+        // Default-heap destination (fast GPU reads), created in the SRV read state.
+        D3D12_HEAP_PROPERTIES defaultHeap{};
+        defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &defaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &description,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&gpuModel.boneMatricesBuffers[i]))))
+        {
+            throw std::runtime_error("Failed to create the bone-matrix buffer.");
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Buffer.FirstElement = 0;
+        srv.Buffer.NumElements = boneCount;
+        srv.Buffer.StructureByteStride = sizeof(DirectX::XMFLOAT4X4);
+        device_.Get()->CreateShaderResourceView(gpuModel.boneMatricesBuffers[i].Get(), &srv, srvCpu);
+        gpuModel.boneMatricesSrv[i] = srvGpu;
+        srvCpu.ptr += srvDescriptorSize_;
+        srvGpu.ptr += srvDescriptorSize_;
+
+        // Upload staging (CPU-writable), double-buffered so the CPU never overwrites a buffer
+        // while the GPU is still copying from it.
+        D3D12_HEAP_PROPERTIES uploadHeap{};
+        uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &uploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &description,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&gpuModel.boneMatricesStaging[i]))))
+        {
+            throw std::runtime_error("Failed to create the bone-matrix staging buffer.");
+        }
+        gpuModel.boneMatricesStaging[i]->Map(0, nullptr, &gpuModel.boneMatricesStagingMapped[i]);
+    }
+
+    // Skin-reference-bone table SRV (static), placed after the bone-matrix SRVs.
+    if (gpuModel.refBonesBuffer != nullptr)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC refBoneSrv{};
+        refBoneSrv.Format = DXGI_FORMAT_UNKNOWN;
+        refBoneSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        refBoneSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        refBoneSrv.Buffer.FirstElement = 0;
+        refBoneSrv.Buffer.NumElements = static_cast<UINT>(model.mesh.refBones.size());
+        refBoneSrv.Buffer.StructureByteStride = sizeof(std::uint32_t);
+        device_.Get()->CreateShaderResourceView(gpuModel.refBonesBuffer.Get(), &refBoneSrv, srvCpu);
+        gpuModel.refBonesSrv = srvGpu;
+        srvCpu.ptr += srvDescriptorSize_;
+        srvGpu.ptr += srvDescriptorSize_;
+    }
 
     residentModels_.emplace(modelIndex, std::move(gpuModel));
 }
@@ -256,6 +260,9 @@ void Dx12Renderer::CreatePipelineState()
         { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 4, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
@@ -280,7 +287,7 @@ void Dx12Renderer::CreatePipelineState()
     description.DepthStencilState.StencilEnable = FALSE;
     description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-    description.InputLayout.NumElements = 3;
+    description.InputLayout.NumElements = 6;
     description.InputLayout.pInputElementDescs = inputLayout;
 
     description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -308,75 +315,6 @@ void Dx12Renderer::CreatePipelineState()
 
     pipelineStateCulled_ = createPipeline(D3D12_CULL_MODE_BACK);
     pipelineStateDoubleSided_ = createPipeline(D3D12_CULL_MODE_NONE);
-
-    // Flat-color debug pipelines: the skeleton line overlay and the skinning-color view share
-    // one vertex/pixel shader pair but differ in input layout, topology, and depth writes.
-    const auto flatVertex = ShaderCompiler::Compile(FlatColorVertexShaderSource, "VSMain", "vs_5_1");
-    const auto flatPixel = ShaderCompiler::Compile(FlatColorPixelShaderSource, "PSMain", "ps_5_1");
-    const D3D12_SHADER_BYTECODE flatVsBytecode = { flatVertex->GetBufferPointer(), flatVertex->GetBufferSize() };
-    const D3D12_SHADER_BYTECODE flatPsBytecode = { flatPixel->GetBufferPointer(), flatPixel->GetBufferSize() };
-
-    const auto createFlatPipeline = [&](const D3D12_INPUT_ELEMENT_DESC* layout, const UINT elementCount,
-                                        const D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
-                                        const D3D12_DEPTH_WRITE_MASK depthWriteMask)
-    {
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
-        description.pRootSignature = rootSignature_.Get();
-        description.VS = flatVsBytecode;
-        description.PS = flatPsBytecode;
-        description.BlendState.AlphaToCoverageEnable = FALSE;
-        description.BlendState.IndependentBlendEnable = FALSE;
-        for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
-        {
-            description.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        }
-        description.SampleMask = UINT_MAX;
-        description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        description.RasterizerState.DepthClipEnable = TRUE;
-        description.DepthStencilState.DepthEnable = TRUE;
-        description.DepthStencilState.DepthWriteMask = depthWriteMask;
-        description.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        description.DepthStencilState.StencilEnable = FALSE;
-        description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-        description.InputLayout.NumElements = elementCount;
-        description.InputLayout.pInputElementDescs = layout;
-        description.PrimitiveTopologyType = topology;
-        description.NumRenderTargets = 1;
-        description.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        description.SampleDesc.Count = 1;
-
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState;
-        const HRESULT result = device_.Get()->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&pipelineState));
-        if (FAILED(result))
-        {
-            DumpD3d12Messages(device_.Get());
-            char message[128];
-            std::snprintf(message, sizeof(message), "Failed to create a flat-color pipeline state (HRESULT 0x%08X).", static_cast<unsigned int>(result));
-            throw std::runtime_error(message);
-        }
-        return pipelineState;
-    };
-
-    // Skeleton lines: position and color interleaved in one buffer, drawn as a line list with
-    // depth reads on and depth writes off so the overlay is occluded but never occludes.
-    {
-        const D3D12_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        };
-        pipelineStateLines_ = createFlatPipeline(layout, 2, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE, D3D12_DEPTH_WRITE_MASK_ZERO);
-    }
-
-    // Skinning colors: position from the mesh vertex buffer (slot 0) plus a flat color from a
-    // second per-vertex stream (slot 1), triangle-list, depth writes on like the toon mesh.
-    {
-        const D3D12_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        };
-        pipelineStateSkinning_ = createFlatPipeline(layout, 2, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_DEPTH_WRITE_MASK_ALL);
-    }
 }
 
 void Dx12Renderer::CreateRenderTargetViews()
@@ -540,27 +478,23 @@ void Dx12Renderer::CreateMeshBuffers(GpuModel& model, const Model& cpuModel)
     model.indexView.BufferLocation = model.indexBuffer->GetGPUVirtualAddress();
     model.indexView.Format = DXGI_FORMAT_R32_UINT;
     model.indexView.SizeInBytes = static_cast<UINT>(indexSize);
-    model.totalIndexCount = static_cast<std::uint32_t>(mesh.indices.size());
 
-    // Skeleton line overlay: two interleaved position+color vertices per bone.
-    const std::vector<LineVertex> skeletonLines = BuildSkeletonLines(cpuModel.skeleton);
-    if (!skeletonLines.empty())
+    // Skinning weights: a second per-vertex stream (BLENDINDICES/BLENDWEIGHT), parallel to the
+    // position/normal/uv buffer and uploaded from the model's CPU-side skinning array.
+    const std::size_t skinningSize = cpuModel.skinning.size() * sizeof(SkinningVertex);
+    model.skinningBuffer = upload(cpuModel.skinning.data(), skinningSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    model.skinningView.BufferLocation = model.skinningBuffer->GetGPUVirtualAddress();
+    model.skinningView.StrideInBytes = sizeof(SkinningVertex);
+    model.skinningView.SizeInBytes = static_cast<UINT>(skinningSize);
+
+    // Skin-reference-bone table: widen the u16 global indices to u32 for the structured buffer
+    // and upload once (it is static, unlike the per-frame bone matrices).
+    if (!cpuModel.mesh.refBones.empty())
     {
-        const std::size_t skeletonSize = skeletonLines.size() * sizeof(LineVertex);
-        model.skeletonVertexBuffer = upload(skeletonLines.data(), skeletonSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-        model.skeletonVertexView.BufferLocation = model.skeletonVertexBuffer->GetGPUVirtualAddress();
-        model.skeletonVertexView.StrideInBytes = sizeof(LineVertex);
-        model.skeletonVertexView.SizeInBytes = static_cast<UINT>(skeletonSize);
-        model.skeletonVertexCount = static_cast<std::uint32_t>(skeletonLines.size());
+        const std::vector<std::uint32_t> refBonesU32(cpuModel.mesh.refBones.begin(), cpuModel.mesh.refBones.end());
+        const std::size_t refBonesSize = refBonesU32.size() * sizeof(std::uint32_t);
+        model.refBonesBuffer = upload(refBonesU32.data(), refBonesSize, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
-
-    // Skinning-color second stream: one flat color per mesh vertex.
-    const std::vector<ColorVertex> skinningColors = BuildSkinningColors(cpuModel.skinning);
-    const std::size_t skinningSize = skinningColors.size() * sizeof(ColorVertex);
-    model.skinningColorBuffer = upload(skinningColors.data(), skinningSize, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-    model.skinningColorView.BufferLocation = model.skinningColorBuffer->GetGPUVirtualAddress();
-    model.skinningColorView.StrideInBytes = sizeof(ColorVertex);
-    model.skinningColorView.SizeInBytes = static_cast<UINT>(skinningSize);
 
     if (FAILED(commandList_->Close()))
     {
@@ -580,12 +514,27 @@ void Dx12Renderer::CreateMeshBuffers(GpuModel& model, const Model& cpuModel)
     }
 }
 
+namespace
+{
+// Maps the runtime texture format to the DXGI block-compressed or uncompressed format.
+DXGI_FORMAT ToDxgiFormat(const TextureFormat format)
+{
+    switch (format)
+    {
+    case TextureFormat::BC1: return DXGI_FORMAT_BC1_UNORM;
+    case TextureFormat::BC7: return DXGI_FORMAT_BC7_UNORM;
+    case TextureFormat::RGBA8:
+    default: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+} // namespace
+
 void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> images)
 {
     // One three-descriptor (base/toon/sphere) SRV bundle per material.
     D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
     heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3;
+    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3 + kFrameCount + 1;
     heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heapDescription.NodeMask = 0;
 
@@ -614,7 +563,7 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
         description.Height = image.height;
         description.DepthOrArraySize = 1;
         description.MipLevels = 1;
-        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        description.Format = ToDxgiFormat(image.format);
         description.SampleDesc.Count = 1;
         description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         description.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -667,7 +616,7 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
 
         void* mapped = nullptr;
         staging->Map(0, nullptr, &mapped);
-        const std::size_t sourceRowBytes = static_cast<std::size_t>(image.width) * 4;
+        const std::size_t sourceRowBytes = static_cast<std::size_t>(rowSizeBytes);
         auto* destination = static_cast<std::uint8_t*>(mapped);
         for (UINT row = 0; row < numRows; ++row)
         {
@@ -703,9 +652,11 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
     };
 
     model.textures.reserve(images.size());
+    model.textureFormats.reserve(images.size());
     for (const Image& image : images)
     {
         model.textures.push_back(uploadTexture(image));
+        model.textureFormats.push_back(ToDxgiFormat(image.format));
     }
 
     const std::uint8_t whitePixel[4] = { 255, 255, 255, 255 };
@@ -752,10 +703,10 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = model.srvHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = model.srvHeap->GetGPUDescriptorHandleForHeapStart();
 
-    const auto createSrv = [&](ID3D12Resource* texture)
+    const auto createSrv = [&](ID3D12Resource* texture, const DXGI_FORMAT format)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.Format = format;
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv.Texture2D.MipLevels = 1;
@@ -769,7 +720,13 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
     // Per-material three-SRV bundle (base, toon, sphere), each falling back to a neutral
     // texture when the material omits one.
     model.materialSrvBundles.reserve(model.materials.size());
-    for (const Material& material : model.materials)
+    const auto texFormat = [&](const std::int32_t index)
+    {
+        return index >= 0
+            ? model.textureFormats[static_cast<std::size_t>(index)]
+            : DXGI_FORMAT_R8G8B8A8_UNORM;
+    };
+    for (const MMDToonMaterial& material : model.materials)
     {
         ID3D12Resource* base = material.baseColorTexture >= 0
             ? model.textures[static_cast<std::size_t>(material.baseColorTexture)].Get()
@@ -782,9 +739,9 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
             : model.whiteTexture.Get();
 
         const D3D12_GPU_DESCRIPTOR_HANDLE bundleStart = gpuHandle;
-        createSrv(base);
-        createSrv(toon);
-        createSrv(sphere);
+        createSrv(base, texFormat(material.baseColorTexture));
+        createSrv(toon, texFormat(material.toonTexture));
+        createSrv(sphere, texFormat(material.sphereTexture));
         model.materialSrvBundles.push_back(bundleStart);
     }
 }
@@ -930,9 +887,10 @@ void Dx12Renderer::FreeImGuiSrvDescriptor(const D3D12_CPU_DESCRIPTOR_HANDLE cpu,
 std::uint64_t Dx12Renderer::Render(
     const std::span<const ModelInstance> instances,
     const std::span<const Model> models,
+    const std::span<const DirectX::XMFLOAT4X4> bonePalette,
+    const std::span<const std::uint32_t> bonePaletteOffsets,
     const Camera& camera,
-    ImDrawData* const uiDrawData,
-    const DebugViewOptions options)
+    ImDrawData* const uiDrawData)
 {
     const std::uint32_t frameIndex = swapChain_.CurrentBackBufferIndex();
 
@@ -1005,44 +963,57 @@ std::uint64_t Dx12Renderer::Render(
             DirectX::XMStoreFloat4x4(&worldStorage, ComputeWorldMatrix(instance));
             commandList_->SetGraphicsRoot32BitConstants(3, 16, &worldStorage, 0);
 
-            if (options.showSkinningColors)
+            // Upload this model's skinning palette: write the staging buffer, copy it into the
+            // default-heap bone buffer on the GPU, and transition the buffer back to SRV read.
+            const std::uint32_t modelIndex = static_cast<std::uint32_t>(instance.modelIndex);
+            if (modelIndex + 1 < bonePaletteOffsets.size())
             {
-                // Skinning-color view: shade the whole mesh by each vertex's dominant bone,
-                // ignoring materials, so position comes from the mesh buffer and color from a
-                // second per-vertex stream.
-                ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
-                commandList_->SetDescriptorHeaps(1, descriptorHeaps);
-                D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningColorView };
-                commandList_->IASetVertexBuffers(0, 2, vertexViews);
-                commandList_->IASetIndexBuffer(&gpuModel.indexView);
-                commandList_->SetPipelineState(pipelineStateSkinning_.Get());
-                commandList_->DrawIndexedInstanced(gpuModel.totalIndexCount, 1, 0, 0, 0);
-            }
-            else
-            {
-                ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
-                commandList_->SetDescriptorHeaps(1, descriptorHeaps);
-                commandList_->IASetVertexBuffers(0, 1, &gpuModel.vertexView);
-                commandList_->IASetIndexBuffer(&gpuModel.indexView);
-
-                for (const DrawPacket& packet : cpuModel.mesh.drawPackets)
+                const std::uint32_t first = bonePaletteOffsets[modelIndex];
+                const std::uint32_t count = bonePaletteOffsets[modelIndex + 1] - first;
+                if (count > 0 && first + count <= bonePalette.size())
                 {
-                    const Material& material = gpuModel.materials[packet.materialIndex];
-                    commandList_->SetPipelineState(
-                        (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
-                    commandList_->SetGraphicsRoot32BitConstants(1, 16, &gpuModel.materialParams[packet.materialIndex], 0);
-                    commandList_->SetGraphicsRootDescriptorTable(2, gpuModel.materialSrvBundles[packet.materialIndex]);
-                    commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+                    std::memcpy(
+                        gpuModel.boneMatricesStagingMapped[frameIndex],
+                        bonePalette.data() + first,
+                        static_cast<std::size_t>(count) * sizeof(DirectX::XMFLOAT4X4));
+
+                    D3D12_RESOURCE_BARRIER boneBarrier{};
+                    boneBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    boneBarrier.Transition.pResource = gpuModel.boneMatricesBuffers[frameIndex].Get();
+                    boneBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                    commandList_->ResourceBarrier(1, &boneBarrier);
+
+                    commandList_->CopyBufferRegion(
+                        gpuModel.boneMatricesBuffers[frameIndex].Get(), 0,
+                        gpuModel.boneMatricesStaging[frameIndex].Get(), 0,
+                        static_cast<std::uint64_t>(count) * sizeof(DirectX::XMFLOAT4X4));
+
+                    boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                    boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    commandList_->ResourceBarrier(1, &boneBarrier);
                 }
             }
 
-            if (options.showSkeleton && gpuModel.skeletonVertexCount > 0)
+            ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
+            commandList_->SetDescriptorHeaps(1, descriptorHeaps);
+            commandList_->SetGraphicsRootDescriptorTable(4, gpuModel.boneMatricesSrv[frameIndex]);
+            commandList_->SetGraphicsRootDescriptorTable(5, gpuModel.refBonesSrv);
+
+            D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningView };
+            commandList_->IASetVertexBuffers(0, 2, vertexViews);
+            commandList_->IASetIndexBuffer(&gpuModel.indexView);
+
+            for (const DrawPacket& packet : cpuModel.mesh.drawPackets)
             {
-                commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-                commandList_->IASetVertexBuffers(0, 1, &gpuModel.skeletonVertexView);
-                commandList_->SetPipelineState(pipelineStateLines_.Get());
-                commandList_->DrawInstanced(gpuModel.skeletonVertexCount, 1, 0, 0);
-                commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                const MMDToonMaterial& material = gpuModel.materials[packet.materialIndex];
+                commandList_->SetPipelineState(
+                    (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
+                commandList_->SetGraphicsRoot32BitConstants(1, 16, &gpuModel.materialParams[packet.materialIndex], 0);
+                commandList_->SetGraphicsRootDescriptorTable(2, gpuModel.materialSrvBundles[packet.materialIndex]);
+                commandList_->SetGraphicsRoot32BitConstant(6, packet.refBoneOffset, 0);
+                commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
             }
         }
     }

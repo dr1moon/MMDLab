@@ -13,6 +13,8 @@
 
 #include <d3d12.h>
 
+#include <DirectXMath.h>
+
 #include <cstdint>
 #include <span>
 #include <unordered_map>
@@ -25,14 +27,6 @@ namespace MmdLab
 struct Camera;
 struct Model;
 struct ModelInstance;
-
-// View-only debug overlays, toggled from the imgui panel and passed to Render each frame. They
-// live on the RhiThread and never round-trip to the GameThread; the renderer just draws them.
-struct DebugViewOptions
-{
-    bool showSkeleton = false;
-    bool showSkinningColors = false;
-};
 
 // The synchronous D3D12 renderer for a composed level of static meshes plus an imgui overlay:
 // a swap chain, a root signature carrying a camera constant buffer, per-material shading
@@ -63,9 +57,10 @@ public:
     [[nodiscard]] std::uint64_t Render(
         std::span<const ModelInstance> instances,
         std::span<const Model> models,
+        std::span<const DirectX::XMFLOAT4X4> bonePalette,
+        std::span<const std::uint32_t> bonePaletteOffsets,
         const Camera& camera,
-        ImDrawData* uiDrawData,
-        DebugViewOptions options);
+        ImDrawData* uiDrawData);
 
     // True once the GPU has completed all work submitted through the frame with this fence value.
     [[nodiscard]] bool IsFrameComplete(std::uint64_t fenceValue) const;
@@ -88,22 +83,28 @@ private:
         Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer;
         D3D12_VERTEX_BUFFER_VIEW vertexView{};
         D3D12_INDEX_BUFFER_VIEW indexView{};
+        // Skinning weights (slot 1): the per-vertex BLENDINDICES/BLENDWEIGHT stream, parallel to
+        // the position/normal/uv buffer.
+        Microsoft::WRL::ComPtr<ID3D12Resource> skinningBuffer;
+        D3D12_VERTEX_BUFFER_VIEW skinningView{};
+        // Bone matrices (skinning palette), double-buffered default-heap structured buffers,
+        // updated per frame by copying from a persistent upload staging buffer. A default heap is
+        // required for fast per-vertex GPU reads; upload-heap reads are uncached and far too slow.
+        Microsoft::WRL::ComPtr<ID3D12Resource> boneMatricesBuffers[kFrameCount];
+        D3D12_GPU_DESCRIPTOR_HANDLE boneMatricesSrv[kFrameCount]{};
+        Microsoft::WRL::ComPtr<ID3D12Resource> boneMatricesStaging[kFrameCount];
+        void* boneMatricesStagingMapped[kFrameCount] = { nullptr, nullptr };
+        // Skin-reference-bone table (static): local u8 -> global u16, widened to u32 on the GPU.
+        Microsoft::WRL::ComPtr<ID3D12Resource> refBonesBuffer;
+        D3D12_GPU_DESCRIPTOR_HANDLE refBonesSrv{};
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> textures;
+        std::vector<DXGI_FORMAT> textureFormats; // Parallel to `textures`.
         Microsoft::WRL::ComPtr<ID3D12Resource> whiteTexture;
         Microsoft::WRL::ComPtr<ID3D12Resource> toonRampTexture;
         std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> materialSrvBundles;
         std::vector<MaterialShaderParams> materialParams;
-        std::span<const Material> materials; // Immutable array, owned by the mesh asset.
-
-        // Skeleton line overlay (interleaved position + color) and the skinning-color second
-        // vertex stream (per-vertex flat color, parallel to the mesh positions).
-        Microsoft::WRL::ComPtr<ID3D12Resource> skeletonVertexBuffer;
-        D3D12_VERTEX_BUFFER_VIEW skeletonVertexView{};
-        std::uint32_t skeletonVertexCount = 0;
-        Microsoft::WRL::ComPtr<ID3D12Resource> skinningColorBuffer;
-        D3D12_VERTEX_BUFFER_VIEW skinningColorView{};
-        std::uint32_t totalIndexCount = 0;
+        std::span<const MMDToonMaterial> materials; // Immutable array, owned by the mesh asset.
     };
 
     void WaitForPreviousFrame(std::uint32_t frameIndex);
@@ -125,8 +126,6 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateCulled_;       // CullMode = BACK.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateDoubleSided_;  // CullMode = NONE.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateLines_;        // Skeleton overlay (LINE list).
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateSkinning_;     // Skinning-color view (two streams).
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap_;
     Microsoft::WRL::ComPtr<ID3D12Resource> depthBuffer_;

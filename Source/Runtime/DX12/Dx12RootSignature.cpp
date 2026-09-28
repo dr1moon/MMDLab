@@ -8,7 +8,7 @@ namespace MmdLab
 {
 Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
 {
-    D3D12_ROOT_PARAMETER rootParameters[4]{};
+    D3D12_ROOT_PARAMETER rootParameters[7]{};
 
     // b0 (vertex + pixel): the camera constant buffer (view-projection, light, view dir).
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -44,6 +44,39 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     rootParameters[3].Constants.Num32BitValues = 16;
     rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    // t3 (vertex): the skinning bone matrices, bound per model as a single-SRV descriptor table.
+    D3D12_DESCRIPTOR_RANGE boneRange{};
+    boneRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    boneRange.NumDescriptors = 1;
+    boneRange.BaseShaderRegister = 3;
+    boneRange.RegisterSpace = 0;
+    boneRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[4].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[4].DescriptorTable.pDescriptorRanges = &boneRange;
+    rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    // t4 (vertex): the skin-reference-bone table (local u8 -> global u16), bound per model.
+    D3D12_DESCRIPTOR_RANGE refBoneRange{};
+    refBoneRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    refBoneRange.NumDescriptors = 1;
+    refBoneRange.BaseShaderRegister = 4;
+    refBoneRange.RegisterSpace = 0;
+    refBoneRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[5].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[5].DescriptorTable.pDescriptorRanges = &refBoneRange;
+    rootParameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    // b3 (vertex): the per-submesh skin-reference-bone slice offset, set per draw.
+    rootParameters[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[6].Constants.ShaderRegister = 3;
+    rootParameters[6].Constants.RegisterSpace = 0;
+    rootParameters[6].Constants.Num32BitValues = 1;
+    rootParameters[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // s0 (pixel): the texture sampler.
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -61,7 +94,7 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC description{};
-    description.NumParameters = 4;
+    description.NumParameters = 7;
     description.pParameters = rootParameters;
     description.NumStaticSamplers = 1;
     description.pStaticSamplers = &sampler;

@@ -12,8 +12,6 @@
 
 #include <exception>
 #include <format>
-#include <functional>
-#include <string>
 #include <vector>
 
 // imgui's Win32 backend deliberately keeps this declaration out of its header (see the #if 0
@@ -140,8 +138,12 @@ uint32_t RhiThread::Run()
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Levels");
-        if (batch.levels.empty())
+        ImGui::Begin("MMDLab");
+        if (ImGui::BeginTabBar("##MainTabs"))
+        {
+            if (ImGui::BeginTabItem("Levels"))
+            {
+                if (batch.levels.empty())
         {
             ImGui::Text("No models found. Place .pmx files next to the viewer (or pass a directory).");
         }
@@ -183,67 +185,91 @@ uint32_t RhiThread::Run()
                 }
                 ImGui::PopID();
             }
+                }
+                ImGui::EndTabItem();
+            }
 
-            // View-only debug overlays, owned by the RhiThread and passed straight to Render.
-            ImGui::Separator();
-            ImGui::Text("Visualization");
-            ImGui::Checkbox("Skeleton", &showSkeleton_);
-            ImGui::Checkbox("Skinning colors", &showSkinningColors_);
-
-            // Per-model bone hierarchy, collapsed by default: each visible model lists its
-            // skeleton as a tree so the hierarchy can be inspected alongside the 3D overlay.
-            if (ImGui::CollapsingHeader("Skeleton tree"))
+            if (ImGui::BeginTabItem("Inspect"))
             {
-                for (std::size_t i = 0; i < batch.instances.size(); ++i)
+                bool anyVisible = false;
+        for (std::size_t i = 0; i < batch.instances.size(); ++i)
+        {
+            const ModelInstance& instance = batch.instances[i];
+            if (!instance.visible || instance.modelIndex >= batch.models.size())
+            {
+                continue;
+            }
+            anyVisible = true;
+            const Model& model = batch.models[instance.modelIndex];
+
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::CollapsingHeader(model.name.c_str()))
+            {
+                const auto textureName = [&](const std::int32_t index) -> const char*
                 {
-                    const ModelInstance& instance = batch.instances[i];
-                    if (!instance.visible || instance.modelIndex >= batch.models.size())
+                    return (index >= 0 && static_cast<std::size_t>(index) < model.mesh.textures.size())
+                        ? model.mesh.textures[static_cast<std::size_t>(index)].c_str()
+                        : "(none)";
+                };
+
+                if (ImGui::TreeNode(std::format("Submeshes ({})", model.mesh.drawPackets.size()).c_str()))
+                {
+                    for (std::size_t s = 0; s < model.mesh.drawPackets.size(); ++s)
                     {
-                        continue;
+                        const DrawPacket& packet = model.mesh.drawPackets[s];
+                        ImGui::Text("#%zu: %u indices (%u tris) -> material %u",
+                            s, packet.indexCount, packet.indexCount / 3, packet.materialIndex);
                     }
-                    const Skeleton& skeleton = batch.models[instance.modelIndex].skeleton;
+                    ImGui::TreePop();
+                }
 
-                    ImGui::PushID(static_cast<int>(i));
-                    const std::string bonesLabel = std::format("Bones ({})", skeleton.bones.size());
-                    if (ImGui::TreeNode(bonesLabel.c_str()))
+                if (ImGui::TreeNode(std::format("Materials ({})", model.mesh.materials.size()).c_str()))
+                {
+                    for (std::size_t m = 0; m < model.mesh.materials.size(); ++m)
                     {
-                        std::function<void(std::int32_t)> emit;
-                        emit = [&](std::int32_t boneIndex)
+                        const MMDToonMaterial& material = model.mesh.materials[m];
+                        if (ImGui::TreeNode(std::format("Material {}", m).c_str()))
                         {
-                            if (boneIndex < 0 || static_cast<std::size_t>(boneIndex) >= skeleton.bones.size())
-                            {
-                                return;
-                            }
-                            const Bone& bone = skeleton.bones[static_cast<std::size_t>(boneIndex)];
-                            const bool leaf = skeleton.children[static_cast<std::size_t>(boneIndex)].empty();
-
-                            ImGui::PushID(static_cast<int>(boneIndex));
-                            const bool open = leaf
-                                ? ImGui::TreeNodeEx(bone.name.c_str(), ImGuiTreeNodeFlags_Leaf)
-                                : ImGui::TreeNodeEx(bone.name.c_str());
-                            if (open && !leaf)
-                            {
-                                for (std::int32_t child : skeleton.children[static_cast<std::size_t>(boneIndex)])
-                                {
-                                    emit(child);
-                                }
-                                ImGui::TreePop();
-                            }
-                            ImGui::PopID();
-                        };
-
-                        for (std::size_t root = 0; root < skeleton.bones.size(); ++root)
-                        {
-                            if (skeleton.bones[root].parentIndex == -1)
-                            {
-                                emit(static_cast<std::int32_t>(root));
-                            }
+                            ImGui::Text("Diffuse  (%.3f, %.3f, %.3f, %.3f)",
+                                material.baseColor[0], material.baseColor[1], material.baseColor[2], material.baseColor[3]);
+                            ImGui::Text("Specular (%.3f, %.3f, %.3f) strength %.3f",
+                                material.specularColor[0], material.specularColor[1], material.specularColor[2], material.specularStrength);
+                            ImGui::Text("Ambient  (%.3f, %.3f, %.3f)",
+                                material.ambientColor[0], material.ambientColor[1], material.ambientColor[2]);
+                            ImGui::Text("Edge     (%.3f, %.3f, %.3f, %.3f) size %.3f",
+                                material.edgeColor[0], material.edgeColor[1], material.edgeColor[2], material.edgeColor[3], material.edgeSize);
+                            ImGui::Text("Base tex:   %s", textureName(material.baseColorTexture));
+                            ImGui::Text("Toon tex:   %s", textureName(material.toonTexture));
+                            ImGui::Text("Sphere tex: %s", textureName(material.sphereTexture));
+                            ImGui::Text("Flags 0x%02X (%s), sphere mode %u",
+                                material.flags,
+                                (material.flags & 0x01u) != 0 ? "double-sided" : "single-sided",
+                                material.sphereMode);
+                            ImGui::TreePop();
                         }
-                        ImGui::TreePop();
                     }
-                    ImGui::PopID();
+                    ImGui::TreePop();
+                }
+
+                if (ImGui::TreeNode(std::format("Textures ({})", model.mesh.textures.size()).c_str()))
+                {
+                    for (std::size_t t = 0; t < model.mesh.textures.size(); ++t)
+                    {
+                        ImGui::Text("#%zu: %s", t, model.mesh.textures[t].c_str());
+                    }
+                    ImGui::TreePop();
                 }
             }
+            ImGui::PopID();
+        }
+                if (!anyVisible)
+                {
+                    ImGui::Text("No visible models.");
+                }
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
         }
         ImGui::End();
 
@@ -280,8 +306,12 @@ uint32_t RhiThread::Run()
                 lastLevelGeneration_ = batch.levelGeneration;
             }
 
+            // Capture only once the selected level has at least one resident instance; the
+            // async load may still be in flight on the first frame, which would capture an
+            // empty scene.
             const bool captureThisFrame =
-                captureRequested_ && capture_ != nullptr && capture_->IsAvailable();
+                captureRequested_ && capture_ != nullptr && capture_->IsAvailable()
+                && !batch.instances.empty();
 
             if (captureThisFrame)
             {
@@ -290,8 +320,8 @@ uint32_t RhiThread::Run()
 
             try
             {
-                frame.gpuFenceValue = renderer_->Render(batch.instances, batch.models, batch.camera, drawData,
-                                                        DebugViewOptions{ showSkeleton_, showSkinningColors_ });
+                frame.gpuFenceValue = renderer_->Render(
+                    batch.instances, batch.models, batch.bonePalette, batch.bonePaletteOffsets, batch.camera, drawData);
             }
             catch (const std::exception& exception)
             {

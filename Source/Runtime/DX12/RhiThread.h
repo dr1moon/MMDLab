@@ -60,10 +60,6 @@ private:
     ImGuiContext* imguiContext_ = nullptr;
     // Level generation last applied to the renderer; the sentinel forces the first build.
     std::uint32_t lastLevelGeneration_ = 0xFFFFFFFFu;
-    // View-only debug toggles the imgui panel writes and Render consumes. They stay here rather
-    // than round-tripping to the GameThread because they are renderer concerns, not world state.
-    bool showSkeleton_ = false;
-    bool showSkinningColors_ = false;
 
     // Frame indices submitted to the GPU, oldest first, awaiting fence completion before
     // their frame resources are returned to the pool.

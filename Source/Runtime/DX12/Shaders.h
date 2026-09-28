@@ -50,11 +50,32 @@ cbuffer InstanceConstants : register(b2)
     float4x4 world;
 };
 
+// Skinning bone matrices (world * inverse-bind), bound per model (t3). A structured buffer (not
+// a constant buffer) keeps the per-vertex dynamic indexing fast.
+StructuredBuffer<float4x4> Bones : register(t3);
+
+// Concatenated per-submesh skin-reference-bone lists, bound per model (t4): each entry maps a
+// submesh-local u8 index to a global bone index into `Bones`, sliced by the per-draw
+// `refBoneOffset` root constant.
+StructuredBuffer<uint> RefBones : register(t4);
+
+// Per-submesh skin-reference-bone slice offset, set as a root constant before each draw.
+cbuffer RefBoneConstants : register(b3)
+{
+    uint refBoneOffset;
+};
+
 struct VSInput
 {
     float4 position : POSITION;
     float4 normal : NORMAL;
     float2 uv : TEXCOORD;
+    float2 uv1 : TEXCOORD1; // Additional UV for the sphere subtexture.
+    // Submesh-local skin indices, read directly in the vertex shader and never output to the
+    // pixel shader, so they are flat (not interpolated) by construction. The R8G8B8A8_UINT
+    // vertex format also prevents any interpolation.
+    uint4 blendIndices : BLENDINDICES;
+    float4 blendWeights : BLENDWEIGHT;
 };
 
 struct VSOutput
@@ -62,17 +83,32 @@ struct VSOutput
     float4 position : SV_POSITION;
     float3 normal : NORMAL;
     float2 uv : TEXCOORD0;
+    float2 uv1 : TEXCOORD1;
 };
 
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
-    output.position = mul(viewProjection, mul(world, float4(input.position.xyz, 1.0)));
+    // Linear-blend skinning: resolve each submesh-local index through the skin-reference-bone
+    // table to its global bone, then weight that bone's palette matrix. Unused slots carry index
+    // 0 and weight 0, so the zero-weight term resolves to a valid bone and never reads out of
+    // bounds.
+    float4x4 skinMatrix =
+        input.blendWeights.x * Bones[RefBones[refBoneOffset + input.blendIndices.x]] +
+        input.blendWeights.y * Bones[RefBones[refBoneOffset + input.blendIndices.y]] +
+        input.blendWeights.z * Bones[RefBones[refBoneOffset + input.blendIndices.z]] +
+        input.blendWeights.w * Bones[RefBones[refBoneOffset + input.blendIndices.w]];
+
+    float4 skinnedPosition = mul(skinMatrix, float4(input.position.xyz, 1.0));
+    output.position = mul(viewProjection, mul(world, skinnedPosition));
+
+    float3 skinnedNormal = mul((float3x3)skinMatrix, input.normal.xyz);
     // Rotate the normal into view space: first by the instance world's upper 3x3, then by the
     // view matrix's upper 3x3, so the matcap samples a camera-relative direction. The pixel
     // shader re-normalizes after interpolation.
-    output.normal = mul((float3x3)view, mul((float3x3)world, input.normal.xyz));
+    output.normal = mul((float3x3)view, mul((float3x3)world, skinnedNormal));
     output.uv = input.uv;
+    output.uv1 = input.uv1;
     return output;
 }
 )";
@@ -104,6 +140,7 @@ struct PSInput
     float4 position : SV_POSITION;
     float3 normal : NORMAL;
     float2 uv : TEXCOORD0;
+    float2 uv1 : TEXCOORD1;
 };
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -127,20 +164,20 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 lighting = ambient.rgb + (1.0 - ambient.rgb) * (baseColor.rgb * toon.rgb);
     float3 color = base.rgb * lighting;
 
-    // Sphere map (matcap): sample the view-space normal's xy, mapped to [0,1], so the matcap
-    // stays fixed to the camera while it orbits.
-    float2 sphereUv = normal.xy * 0.5 + 0.5;
+    // Sphere map: multiply/add (mode 1/2) sample the matcap with the view-space normal; the
+    // subtexture (mode 3) is a second texture layer sampled with the additional UV instead.
+    float2 sphereUv = (params.x == 3.0) ? input.uv1 : (normal.xy * 0.5 + 0.5);
     float4 sphere = sphereTex.Sample(linearSampler, sphereUv);
 
-    if (params.x == 1.0)
+    if (params.x == 1.0 || params.x == 3.0)
     {
-        color *= sphere.rgb; // multiply.
+        color *= sphere.rgb; // multiply / subtexture.
     }
     else if (params.x == 2.0)
     {
         color += sphere.rgb; // add.
     }
-    // 0 = off; 3 = subtexture (sampled with the base UV for now, treated as multiply).
+    // 0 = off.
 
     // Blinn specular.
     float ndoth = saturate(dot(normal, halfVec));
@@ -151,52 +188,4 @@ float4 PSMain(PSInput input) : SV_TARGET
 }
 )";
 
-// Flat, unlit color shaders for the debug overlays: the skeleton line overlay and the
-// skinning-color view. They reuse the same root signature as the toon mesh but consume only the
-// camera constant buffer (b0) and the per-instance world matrix (b2); the material constants
-// and texture table are simply unused by them.
-inline const char* FlatColorVertexShaderSource = R"(
-cbuffer CameraConstants : register(b0)
-{
-    float4x4 viewProjection;
-};
-
-cbuffer InstanceConstants : register(b2)
-{
-    float4x4 world;
-};
-
-struct VSInput
-{
-    float4 position : POSITION;
-    float4 color : COLOR;
-};
-
-struct VSOutput
-{
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
-
-VSOutput VSMain(VSInput input)
-{
-    VSOutput output;
-    output.position = mul(viewProjection, mul(world, float4(input.position.xyz, 1.0)));
-    output.color = input.color;
-    return output;
-}
-)";
-
-inline const char* FlatColorPixelShaderSource = R"(
-struct PSInput
-{
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
-
-float4 PSMain(PSInput input) : SV_TARGET
-{
-    return input.color;
-}
-)";
 } // namespace MmdLab

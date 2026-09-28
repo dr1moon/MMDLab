@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Animation/VmdAnimator.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Scene/Camera.h"
 #include "Runtime/Scene/WorldData.h"
@@ -38,6 +39,7 @@ public:
     [[nodiscard]] std::uint32_t LevelGeneration() const { return levelGeneration_; }
     [[nodiscard]] const std::vector<Level>& Levels() const { return levels_; }
     [[nodiscard]] Camera& GetCamera() { return camera_; }
+    [[nodiscard]] VmdAnimator& Animator() { return animator_; }
 
     // Selects a level. A loaded level is published immediately (generation bump + camera frame);
     // an unloaded one is still loading in the background, and its completion publishes it.
@@ -83,6 +85,7 @@ private:
     std::vector<Level> levels_;
     std::vector<PendingLevel> pending_;
     Camera camera_;
+    VmdAnimator animator_;
     ModelRegistry* registry_ = nullptr;
     Channel<LoadRequest, kLoadRequestCapacity>* loadRequests_ = nullptr;
     std::size_t selectedLevel_ = 0;
