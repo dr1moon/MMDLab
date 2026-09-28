@@ -4,3 +4,7 @@ MMDLab.sln
 MMDLab.slnx
 captures/
 Project/
+
+# Local editor state and ad-hoc captures.
+imgui.ini
+Snipaste_*.png
