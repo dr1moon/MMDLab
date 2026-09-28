@@ -182,7 +182,6 @@ int wmain(const int argc, wchar_t* argv[])
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
         auto previousTime = std::chrono::steady_clock::now();
-        bool dumpedBoneDebug = false;
         while (application.ProcessMessages())
         {
             const auto currentTime = std::chrono::steady_clock::now();
@@ -254,29 +253,6 @@ int wmain(const int argc, wchar_t* argv[])
                 else
                 {
                     MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, nullptr, palette, worldScratch);
-                }
-
-                // One-shot diagnostic: dump the bind local rotation and the final skinning matrix
-                // (palette) per bone for the character rig, so the conventions can be checked
-                // against the Blender reference.
-                if (!dumpedBoneDebug && model.skeleton.bones.size() > 64)
-                {
-                    dumpedBoneDebug = true;
-                    for (std::size_t bi = 0; bi < model.skeleton.bones.size(); ++bi)
-                    {
-                        const DirectX::XMFLOAT4X4& b = model.bindPose.localBind[bi];
-                        const DirectX::XMFLOAT4X4& p = palette[bi];
-                        MmdLab::LogInfo("BoneDebug", std::format(
-                            "{} bind=({:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f}) pal=({:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f},{:.5f})",
-                            model.skeleton.bones[bi].name,
-                            b.m[0][0], b.m[0][1], b.m[0][2],
-                            b.m[1][0], b.m[1][1], b.m[1][2],
-                            b.m[2][0], b.m[2][1], b.m[2][2],
-                            p.m[0][0], p.m[0][1], p.m[0][2], p.m[0][3],
-                            p.m[1][0], p.m[1][1], p.m[1][2], p.m[1][3],
-                            p.m[2][0], p.m[2][1], p.m[2][2], p.m[2][3],
-                            p.m[3][0], p.m[3][1], p.m[3][2], p.m[3][3]));
-                    }
                 }
 
                 frame.bonePaletteSnapshot.insert(frame.bonePaletteSnapshot.end(), palette.begin(), palette.end());
