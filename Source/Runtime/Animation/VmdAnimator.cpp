@@ -140,7 +140,7 @@ void VmdAnimator::SamplePose(
     {
         const Bone& bone = skeleton.bones[i];
         const VmdBoneTrack* track = FindTrack(bone.name);
-        if (track == nullptr)
+        if (track == nullptr || track->keys.empty())
         {
             outPose.local[i] = bindPose.localBind[i];
             continue;
