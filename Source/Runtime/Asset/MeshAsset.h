@@ -13,8 +13,11 @@ struct MeshAsset
 {
     std::vector<MmdlVertex> vertices;
     std::vector<std::uint32_t> indices;
-    std::vector<Material> materials;
+    std::vector<MMDToonMaterial> materials;
     std::vector<DrawPacket> drawPackets;
+    // Concatenated per-submesh skin-reference-bone lists (global u16 bone indices), sliced by
+    // DrawPacket::refBoneOffset/refBoneCount.
+    std::vector<std::uint16_t> refBones;
     std::vector<std::string> textures; // Texture paths (the .mmdl string table).
 
     // Model-space bounds of the vertex positions, computed once at build time so level framing

@@ -12,7 +12,9 @@ MeshAsset BuildMeshAsset(const MmdlMeshData& mesh)
     asset.indices = mesh.indices;
     asset.materials = mesh.materials;
     asset.drawPackets = mesh.drawPackets;
+    asset.refBones = mesh.refBones;
     asset.textures = mesh.strings;
+
     for (int axis = 0; axis < 3; ++axis)
     {
         asset.boundsMin[axis] = mesh.boundsMin[axis];

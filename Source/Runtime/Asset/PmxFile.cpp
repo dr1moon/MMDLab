@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -132,18 +131,33 @@ std::int32_t ReadIndex(Reader& reader, const std::uint8_t size)
     default: throw std::runtime_error("Unsupported index size.");
     }
 }
+
+// Reads a bone index and narrows it to the runtime's two-byte representation. PMX's -1 "no bone"
+// sentinel becomes kInvalidBoneIndex (0xFFFF); a valid 0..N-1 index passes through unchanged.
+std::uint16_t ReadBoneIndex(Reader& reader, const std::uint8_t boneIndexSize)
+{
+    return static_cast<std::uint16_t>(ReadIndex(reader, boneIndexSize));
+}
 } // namespace
 
 PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
 {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file)
     {
         throw std::runtime_error("Failed to open the PMX file.");
     }
-    std::vector<std::uint8_t> data(
-        (std::istreambuf_iterator<char>(file)),
-        std::istreambuf_iterator<char>());
+    const std::streamsize fileSize = file.tellg();
+    if (fileSize < 0)
+    {
+        throw std::runtime_error("Failed to size the PMX file.");
+    }
+    file.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(fileSize));
+    if (fileSize > 0)
+    {
+        file.read(reinterpret_cast<char*>(data.data()), fileSize);
+    }
 
     Reader reader(data.data(), data.size());
 
@@ -199,8 +213,19 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         vertex.uv[0] = reader.ReadF32();
         vertex.uv[1] = reader.ReadF32();
 
-        // Additional UVs (a vec4 each).
-        reader.Skip(static_cast<std::size_t>(additionalUvCount) * 4 * 4);
+        // Additional UVs (a vec4 each). Keep the first one (UV1) for the sphere subtexture.
+        if (additionalUvCount > 0)
+        {
+            vertex.uv1[0] = reader.ReadF32();
+            vertex.uv1[1] = reader.ReadF32();
+            reader.Skip(2 * 4); // The remaining two floats of the first additional UV.
+            reader.Skip(static_cast<std::size_t>(additionalUvCount - 1) * 4 * 4);
+        }
+        else
+        {
+            vertex.uv1[0] = vertex.uv[0];
+            vertex.uv1[1] = vertex.uv[1];
+        }
 
         // Skinning: read up to four bone indices and their weights. SDEF is read as BDEF2 with
         // its spherical C/R0/R1 dropped, the standard linear-blend-skinning approximation.
@@ -334,13 +359,13 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         bone.position[0] = reader.ReadF32();
         bone.position[1] = reader.ReadF32();
         bone.position[2] = reader.ReadF32();
-        bone.parentIndex = ReadIndex(reader, boneIndexSize);
+        bone.parentIndex = ReadBoneIndex(reader, boneIndexSize);
         bone.deformLayer = reader.ReadI32();
         bone.flags = reader.ReadU16();
 
         if ((bone.flags & PmxBoneFlags::TailIndex) != 0)
         {
-            bone.tailIndex = ReadIndex(reader, boneIndexSize);
+            bone.tailIndex = ReadBoneIndex(reader, boneIndexSize);
         }
         else
         {
@@ -351,7 +376,7 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
 
         if ((bone.flags & (PmxBoneFlags::InheritRotation | PmxBoneFlags::InheritTranslation)) != 0)
         {
-            bone.inheritParentIndex = ReadIndex(reader, boneIndexSize);
+            bone.inheritParentIndex = ReadBoneIndex(reader, boneIndexSize);
             bone.inheritInfluence = reader.ReadF32();
         }
 
@@ -379,7 +404,7 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
 
         if ((bone.flags & PmxBoneFlags::Ik) != 0)
         {
-            bone.ikTargetIndex = ReadIndex(reader, boneIndexSize);
+            bone.ikTargetIndex = ReadBoneIndex(reader, boneIndexSize);
             bone.ikLoopCount = reader.ReadI32();
             bone.ikLimitAngle = reader.ReadF32();
             const std::int32_t linkCount = reader.ReadI32();
@@ -387,7 +412,7 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
             for (std::int32_t link = 0; link < linkCount; ++link)
             {
                 PmxIkLink ikLink;
-                ikLink.boneIndex = ReadIndex(reader, boneIndexSize);
+                ikLink.boneIndex = ReadBoneIndex(reader, boneIndexSize);
                 ikLink.hasLimit = reader.ReadU8() != 0;
                 if (ikLink.hasLimit)
                 {
@@ -432,23 +457,10 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
 {
     MmdlMeshData mesh;
 
-    mesh.vertices.reserve(pmx.vertices.size());
+    // Union the bounds over the source vertices (the per-submesh split below duplicates vertices
+    // but not their positions).
     for (const PmxVertex& vertex : pmx.vertices)
     {
-        MmdlVertex out{};
-        out.position[0] = vertex.position[0];
-        out.position[1] = vertex.position[1];
-        out.position[2] = vertex.position[2];
-        out.position[3] = 1.0f;
-        out.normal[0] = vertex.normal[0];
-        out.normal[1] = vertex.normal[1];
-        out.normal[2] = vertex.normal[2];
-        out.normal[3] = 0.0f;
-        out.uv[0] = vertex.uv[0];
-        out.uv[1] = vertex.uv[1];
-        mesh.vertices.push_back(out);
-
-        // Union the bounds while converting, so the runtime asset never re-scans the vertices.
         for (int axis = 0; axis < 3; ++axis)
         {
             mesh.boundsMin[axis] = std::min(mesh.boundsMin[axis], vertex.position[axis]);
@@ -456,13 +468,15 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         }
     }
 
-    mesh.indices = pmx.indices;
     mesh.strings = pmx.textures;
+    mesh.vertices.reserve(pmx.vertices.size());
+    mesh.skinning.reserve(pmx.vertices.size());
+    mesh.indices.reserve(pmx.indices.size());
 
     mesh.materials.reserve(pmx.materials.size());
     for (const PmxMaterial& material : pmx.materials)
     {
-        Material out{};
+        MMDToonMaterial out{};
         out.baseColor[0] = material.diffuse[0];
         out.baseColor[1] = material.diffuse[1];
         out.baseColor[2] = material.diffuse[2];
@@ -487,17 +501,171 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         mesh.materials.push_back(out);
     }
 
-    // Each PMX material is one contiguous index range; emit a draw packet per material.
-    mesh.drawPackets.reserve(pmx.materials.size());
-    std::uint32_t firstIndex = 0;
-    for (std::uint32_t i = 0; i < pmx.materials.size(); ++i)
+    // Cook the skeleton and per-vertex skinning so the .mmdl is a complete asset. The bone name
+    // is stored inline (not in the string table, which stays texture paths only); the tail is
+    // resolved here (a tail-index reference becomes the target bone's head).
+    mesh.bones.reserve(pmx.bones.size());
+    for (std::size_t i = 0; i < pmx.bones.size(); ++i)
     {
+        const PmxBone& source = pmx.bones[i];
+        MmdlBone bone{};
+        bone.name = source.name;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            bone.position[axis] = source.position[axis];
+        }
+
+        const bool hasTailBone = (source.flags & PmxBoneFlags::TailIndex) != 0
+            && source.tailIndex != kInvalidBoneIndex
+            && static_cast<std::size_t>(source.tailIndex) < pmx.bones.size();
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            bone.tail[axis] = hasTailBone
+                ? pmx.bones[static_cast<std::size_t>(source.tailIndex)].position[axis]
+                : source.position[axis] + source.tailOffset[axis];
+        }
+
+        bone.parentIndex = source.parentIndex;
+        bone.hasLocalAxes = (source.flags & PmxBoneFlags::LocalCoordinate) != 0 ? 1u : 0u;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            bone.localX[axis] = source.localX[axis];
+            bone.localZ[axis] = source.localZ[axis];
+        }
+
+        bone.hasInheritRotation = (source.flags & PmxBoneFlags::InheritRotation) != 0 ? 1u : 0u;
+        bone.hasInheritTranslation = (source.flags & PmxBoneFlags::InheritTranslation) != 0 ? 1u : 0u;
+        bone.inheritParentIndex = source.inheritParentIndex;
+        bone.inheritInfluence = source.inheritInfluence;
+
+        bone.hasFixedAxis = (source.flags & PmxBoneFlags::FixedAxis) != 0 ? 1u : 0u;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            bone.fixedAxis[axis] = source.fixedAxis[axis];
+        }
+
+        if ((source.flags & PmxBoneFlags::Ik) != 0)
+        {
+            bone.ikTargetIndex = source.ikTargetIndex;
+            bone.ikLoopCount = source.ikLoopCount;
+            bone.ikLimitAngle = source.ikLimitAngle;
+            bone.ikLinks.reserve(source.ikLinks.size());
+            for (const PmxIkLink& link : source.ikLinks)
+            {
+                bone.ikLinks.push_back(link.boneIndex);
+            }
+        }
+        mesh.bones.push_back(bone);
+    }
+
+    // Per-submesh expansion: build disjoint vertex, skinning, and index buffers plus the
+    // per-submesh skin-reference-bone table. PMX materials may share vertices, so each submesh
+    // gets its own copies with u8 indices local to that submesh (a shared vertex cannot carry one
+    // set of local indices that is valid for every submesh).
+    mesh.drawPackets.reserve(pmx.materials.size());
+    mesh.refBones.clear();
+    std::uint32_t materialFirstIndex = 0;
+    for (std::uint32_t m = 0; m < pmx.materials.size(); ++m)
+    {
+        const std::uint32_t indexCount = static_cast<std::uint32_t>(pmx.materials[m].indexCount);
+
         DrawPacket packet{};
-        packet.firstIndex = firstIndex;
-        packet.indexCount = static_cast<std::uint32_t>(pmx.materials[i].indexCount);
-        packet.materialIndex = i;
-        firstIndex += packet.indexCount;
+        packet.firstIndex = static_cast<std::uint32_t>(mesh.indices.size());
+        packet.indexCount = indexCount;
+        packet.materialIndex = m;
+
+        std::vector<std::int32_t> vertexRemap(pmx.vertices.size(), -1); // Global -> local vertex.
+        std::vector<std::uint32_t> localToGlobal;                       // Local vertex -> global vertex.
+        std::vector<std::uint32_t> localIndices;
+        localIndices.reserve(indexCount);
+        std::vector<char> used(pmx.bones.size(), 0);
+
+        for (std::uint32_t k = 0; k < indexCount; ++k)
+        {
+            const std::uint32_t globalVertex = pmx.indices[materialFirstIndex + k];
+            if (vertexRemap[globalVertex] < 0)
+            {
+                vertexRemap[globalVertex] = static_cast<std::int32_t>(localToGlobal.size());
+                localToGlobal.push_back(globalVertex);
+
+                const PmxVertex& source = pmx.vertices[globalVertex];
+                MmdlVertex out{};
+                out.position[0] = source.position[0];
+                out.position[1] = source.position[1];
+                out.position[2] = source.position[2];
+                out.position[3] = 1.0f;
+                out.normal[0] = source.normal[0];
+                out.normal[1] = source.normal[1];
+                out.normal[2] = source.normal[2];
+                out.normal[3] = 0.0f;
+                out.uv[0] = source.uv[0];
+                out.uv[1] = source.uv[1];
+                out.uv1[0] = source.uv1[0];
+                out.uv1[1] = source.uv1[1];
+                mesh.vertices.push_back(out);
+
+                for (int slot = 0; slot < 4; ++slot)
+                {
+                    const std::int32_t bone = source.boneIndices[slot];
+                    if (bone >= 0 && static_cast<std::size_t>(bone) < used.size() && source.boneWeights[slot] > 0.0f)
+                    {
+                        used[static_cast<std::size_t>(bone)] = 1;
+                    }
+                }
+            }
+            localIndices.push_back(static_cast<std::uint32_t>(vertexRemap[globalVertex]));
+        }
+
+        // Ascending global -> local bone map for this submesh.
+        std::vector<std::uint8_t> boneLocal(pmx.bones.size(), 0);
+        std::uint16_t refCount = 0;
+        for (std::size_t b = 0; b < used.size(); ++b)
+        {
+            if (used[b])
+            {
+                boneLocal[b] = static_cast<std::uint8_t>(refCount);
+                ++refCount;
+            }
+        }
+        if (refCount > 256)
+        {
+            throw std::runtime_error("PMX submesh references more than 256 bones; cannot remap to u8 indices.");
+        }
+
+        packet.refBoneOffset = static_cast<std::uint32_t>(mesh.refBones.size());
+        packet.refBoneCount = refCount;
+        for (std::size_t b = 0; b < used.size(); ++b)
+        {
+            if (used[b])
+            {
+                mesh.refBones.push_back(static_cast<std::uint16_t>(b));
+            }
+        }
+
+        // Append this submesh's skinning (u8 local indices), then its remapped indices.
+        for (const std::uint32_t globalVertex : localToGlobal)
+        {
+            const PmxVertex& source = pmx.vertices[globalVertex];
+            MmdlSkinningVertex skin{};
+            for (int slot = 0; slot < 4; ++slot)
+            {
+                skin.boneWeights[slot] = source.boneWeights[slot];
+                const std::int32_t bone = source.boneIndices[slot];
+                skin.boneIndices[slot] = (bone >= 0 && static_cast<std::size_t>(bone) < used.size())
+                    ? boneLocal[static_cast<std::size_t>(bone)]
+                    : static_cast<std::uint8_t>(0);
+            }
+            mesh.skinning.push_back(skin);
+        }
+
+        const std::uint32_t vertexBase = static_cast<std::uint32_t>(mesh.vertices.size() - localToGlobal.size());
+        for (const std::uint32_t localIndex : localIndices)
+        {
+            mesh.indices.push_back(vertexBase + localIndex);
+        }
+
         mesh.drawPackets.push_back(packet);
+        materialFirstIndex += indexCount;
     }
 
     return mesh;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Asset/MmdlFormat.h"
+#include "Runtime/Asset/Skeleton.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -14,6 +15,7 @@ struct PmxVertex
     float position[3];
     float normal[3];
     float uv[2];
+    float uv1[2] = { 0.0f, 0.0f }; // Additional UV, used by the sphere subtexture (mode 3).
     // Linear blend skinning: up to four bone indices and their weights. BDEF1/2/4 and QDEF map
     // directly; SDEF is read as BDEF2 (its spherical C/R0/R1 is dropped), the standard LBS
     // approximation. Unused slots are -1 / 0.
@@ -57,7 +59,7 @@ inline constexpr std::uint16_t ExternalParentDeform = 0x2000;
 // One link of an IK bone's chain.
 struct PmxIkLink
 {
-    std::int32_t boneIndex = -1;
+    std::uint16_t boneIndex = kInvalidBoneIndex;
     bool hasLimit = false;
     float limitMin[3] = { 0.0f, 0.0f, 0.0f };
     float limitMax[3] = { 0.0f, 0.0f, 0.0f };
@@ -69,16 +71,16 @@ struct PmxBone
     std::string name;
     std::string nameEn;
     float position[3];             // Bone origin in model space (the bind pose).
-    std::int32_t parentIndex = -1; // -1 for a root bone.
+    std::uint16_t parentIndex = kInvalidBoneIndex; // kInvalidBoneIndex for a root bone.
     std::int32_t deformLayer = 0;
     std::uint16_t flags = 0;
 
     // Bone tail: an explicit target bone (TailIndex flag) or a position offset.
-    std::int32_t tailIndex = -1;
+    std::uint16_t tailIndex = kInvalidBoneIndex;
     float tailOffset[3] = { 0.0f, 0.0f, 0.0f };
 
     // Inheritance (InheritRotation or InheritTranslation flag).
-    std::int32_t inheritParentIndex = -1;
+    std::uint16_t inheritParentIndex = kInvalidBoneIndex;
     float inheritInfluence = 0.0f;
 
     float fixedAxis[3] = { 0.0f, 0.0f, 0.0f }; // FixedAxis flag.
@@ -87,7 +89,7 @@ struct PmxBone
     std::int32_t externalParentKey = 0;         // PhysicsAfterDeform flag.
 
     // IK (Ik flag).
-    std::int32_t ikTargetIndex = -1;
+    std::uint16_t ikTargetIndex = kInvalidBoneIndex;
     std::int32_t ikLoopCount = 0;
     float ikLimitAngle = 0.0f;
     std::vector<PmxIkLink> ikLinks;

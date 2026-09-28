@@ -30,7 +30,7 @@ struct ModelParseRequest
     std::filesystem::path path;
 };
 
-// GameThread -> worker: decode one texture into RGBA8.
+// GameThread -> worker: decode one texture into RGBA8 (or read its cooked .mmtex).
 struct TextureDecodeRequest
 {
     std::size_t levelIndex = 0;

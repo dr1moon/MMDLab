@@ -13,6 +13,8 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -149,5 +151,67 @@ Image MissingTextureImage()
     image.height = 1;
     image.pixels = { 255, 0, 255, 255 }; // Magenta, opaque.
     return image;
+}
+
+Image ReadCookedTexture(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("Failed to open the cooked texture file.");
+    }
+
+    CookedTextureHeader header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file)
+    {
+        throw std::runtime_error("Cooked texture file is too small.");
+    }
+    if (header.magic != CookedTextureMagic)
+    {
+        throw std::runtime_error("Not a cooked texture (bad magic).");
+    }
+    if (header.version != CookedTextureVersion)
+    {
+        throw std::runtime_error("Unsupported cooked texture version.");
+    }
+    if (header.format > static_cast<std::uint32_t>(TextureFormat::BC7))
+    {
+        throw std::runtime_error("Unsupported cooked texture format.");
+    }
+
+    // Read the pixel/block data straight into the image (no intermediate copy).
+    Image image;
+    image.width = header.width;
+    image.height = header.height;
+    image.format = static_cast<TextureFormat>(header.format);
+    image.pixels.resize(header.dataBytes);
+    file.read(reinterpret_cast<char*>(image.pixels.data()), static_cast<std::streamsize>(header.dataBytes));
+    if (!file)
+    {
+        throw std::runtime_error("Cooked texture data is truncated.");
+    }
+    return image;
+}
+
+Image LoadTexture(const std::filesystem::path& path)
+{
+    std::filesystem::path cookedPath = path;
+    cookedPath.replace_extension(L".mmtex");
+    if (std::filesystem::exists(cookedPath))
+    {
+        try
+        {
+            return ReadCookedTexture(cookedPath);
+        }
+        catch (const std::exception&)
+        {
+            // Stale or corrupt; fall through and decode.
+        }
+    }
+
+    // No current .mmtex: decode into RGBA8. Block compression is the asset pipeline's job, not the
+    // runtime's.
+    return DecodeImage(path);
 }
 } // namespace MmdLab

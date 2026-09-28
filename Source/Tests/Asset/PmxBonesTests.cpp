@@ -63,22 +63,23 @@ MMDLAB_TEST(Asset.Pmx, ParsesBonesAndSkinning)
 
     MMDLAB_CHECK(mesh.bones.size() > 0);
 
-    // Bones: every parent index is -1 or a valid bone, and the parent chain terminates (no cycle).
+    // Bones: every parent index is kInvalidBoneIndex or a valid bone, and the parent chain
+    // terminates (no cycle).
     std::size_t rootCount = 0;
     std::size_t maxDepth = 0;
     for (std::size_t i = 0; i < mesh.bones.size(); ++i)
     {
-        const std::int32_t parent = mesh.bones[i].parentIndex;
-        MMDLAB_CHECK(parent == -1 || (parent >= 0 && static_cast<std::size_t>(parent) < mesh.bones.size()));
-        if (parent == -1)
+        const std::uint16_t parent = mesh.bones[i].parentIndex;
+        MMDLAB_CHECK(parent == MmdLab::kInvalidBoneIndex || static_cast<std::size_t>(parent) < mesh.bones.size());
+        if (parent == MmdLab::kInvalidBoneIndex)
         {
             ++rootCount;
             continue;
         }
 
         std::size_t depth = 0;
-        std::int32_t cursor = parent;
-        while (cursor != -1)
+        std::uint16_t cursor = parent;
+        while (cursor != MmdLab::kInvalidBoneIndex)
         {
             MMDLAB_CHECK(depth < mesh.bones.size()); // A cycle would exceed the bone count.
             cursor = mesh.bones[static_cast<std::size_t>(cursor)].parentIndex;
@@ -122,33 +123,33 @@ MMDLAB_TEST(Asset.Model, RetainsSkeletonAndSkinning)
     MMDLAB_CHECK(model.skeleton.bones.size() > 0);
     MMDLAB_CHECK(model.skinning.size() == model.mesh.vertices.size());
 
-    // Parent indices are valid or -1, and every parent's children list names its child.
+    // Parent indices are valid or kInvalidBoneIndex, and every parent's children list names its child.
     std::size_t childCount = 0;
     for (std::size_t i = 0; i < model.skeleton.bones.size(); ++i)
     {
-        const std::int32_t parent = model.skeleton.bones[i].parentIndex;
-        MMDLAB_CHECK(parent == -1 || (parent >= 0 && static_cast<std::size_t>(parent) < model.skeleton.bones.size()));
-        if (parent != -1)
+        const std::uint16_t parent = model.skeleton.bones[i].parentIndex;
+        MMDLAB_CHECK(parent == MmdLab::kInvalidBoneIndex || static_cast<std::size_t>(parent) < model.skeleton.bones.size());
+        if (parent != MmdLab::kInvalidBoneIndex)
         {
-            const std::vector<std::int32_t>& siblings = model.skeleton.children[static_cast<std::size_t>(parent)];
-            MMDLAB_CHECK(std::find(siblings.begin(), siblings.end(), static_cast<std::int32_t>(i)) != siblings.end());
+            const std::vector<std::uint16_t>& siblings = model.skeleton.children[static_cast<std::size_t>(parent)];
+            MMDLAB_CHECK(std::find(siblings.begin(), siblings.end(), static_cast<std::uint16_t>(i)) != siblings.end());
         }
     }
-    for (const std::vector<std::int32_t>& siblings : model.skeleton.children)
+    for (const std::vector<std::uint16_t>& siblings : model.skeleton.children)
     {
         childCount += siblings.size();
     }
     std::size_t nonRootCount = 0;
     for (const MmdLab::Bone& bone : model.skeleton.bones)
     {
-        if (bone.parentIndex != -1)
+        if (bone.parentIndex != MmdLab::kInvalidBoneIndex)
         {
             ++nonRootCount;
         }
     }
     MMDLAB_CHECK(childCount == nonRootCount);
 
-    // At least one bone resolves a tail distinct from its head, so the overlay has real segments.
+    // At least one bone resolves a tail distinct from its head, so the skeleton has real directions.
     bool hasTail = false;
     for (const MmdLab::Bone& bone : model.skeleton.bones)
     {
@@ -162,11 +163,20 @@ MMDLAB_TEST(Asset.Model, RetainsSkeletonAndSkinning)
     }
     MMDLAB_CHECK(hasTail);
 
-    // Every vertex resolves a valid dominant bone index.
+    // Every vertex resolves a dominant (submesh-local) bone, and the skin-reference-bone table
+    // maps each submesh's local indices to valid global bones.
     for (const MmdLab::SkinningVertex& vertex : model.skinning)
     {
-        const std::int32_t dominant = MmdLab::DominantBoneIndex(vertex);
-        MMDLAB_CHECK(dominant >= 0 && static_cast<std::size_t>(dominant) < model.skeleton.bones.size());
+        MMDLAB_CHECK(MmdLab::DominantBoneIndex(vertex) >= 0);
+    }
+    for (const std::uint16_t bone : model.mesh.refBones)
+    {
+        MMDLAB_CHECK(static_cast<std::size_t>(bone) < model.skeleton.bones.size());
+    }
+    for (const MmdLab::DrawPacket& packet : model.mesh.drawPackets)
+    {
+        MMDLAB_CHECK(packet.refBoneCount <= 256);
+        MMDLAB_CHECK(static_cast<std::uint64_t>(packet.refBoneOffset) + packet.refBoneCount <= model.mesh.refBones.size());
     }
 
     std::printf("  retained %zu bones and %zu skinning vertices\n",

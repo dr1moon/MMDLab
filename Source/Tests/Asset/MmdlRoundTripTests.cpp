@@ -20,7 +20,7 @@ MmdLab::MmdlMeshData MakeTestMesh()
     };
     mesh.indices = { 0, 1, 2, 0, 2, 3 };
 
-    MmdLab::Material red;
+    MmdLab::MMDToonMaterial red;
     red.baseColor[0] = 1.0f;
     red.baseColor[1] = 0.0f;
     red.baseColor[2] = 0.0f;
@@ -31,7 +31,7 @@ MmdLab::MmdlMeshData MakeTestMesh()
     red.sphereMode = 2u; // sphere add.
     red.flags = 0x01u; // double-sided.
 
-    MmdLab::Material green;
+    MmdLab::MMDToonMaterial green;
     green.baseColor[0] = 0.0f;
     green.baseColor[1] = 1.0f;
     green.baseColor[2] = 0.0f;
@@ -42,12 +42,51 @@ MmdLab::MmdlMeshData MakeTestMesh()
 
     mesh.materials = { red, green };
     mesh.drawPackets = {
-        { 0, 3, 0 }, // first triangle -> red.
-        { 3, 3, 1 }, // second triangle -> green.
+        { 0, 3, 0, 0, 1 }, // first triangle -> red; skin-reference bones [0, 1).
+        { 3, 3, 1, 1, 1 }, // second triangle -> green; skin-reference bones [1, 2).
     };
+    mesh.refBones = { 0, 1 };
     mesh.strings = { "red.png", "green.png" };
     mesh.boundsMin[0] = 0.0f; mesh.boundsMin[1] = 0.0f; mesh.boundsMin[2] = 0.0f;
     mesh.boundsMax[0] = 1.0f; mesh.boundsMax[1] = 1.0f; mesh.boundsMax[2] = 0.0f;
+
+    // Two bones (root + child); names are stored inline.
+    MmdLab::MmdlBone root{};
+    root.name = "root";
+    root.position[0] = 0.0f; root.position[1] = 0.0f; root.position[2] = 0.0f;
+    root.tail[0] = 0.0f; root.tail[1] = 1.0f; root.tail[2] = 0.0f;
+    root.parentIndex = MmdLab::kInvalidBoneIndex;
+
+    MmdLab::MmdlBone child{};
+    child.name = "child";
+    child.position[0] = 0.0f; child.position[1] = 1.0f; child.position[2] = 0.0f;
+    child.tail[0] = 0.0f; child.tail[1] = 2.0f; child.tail[2] = 0.0f;
+    child.parentIndex = 0;
+    child.hasLocalAxes = 1u;
+    child.localX[0] = 1.0f;
+    child.localZ[2] = 1.0f;
+
+    child.hasInheritRotation = 1u;
+    child.hasInheritTranslation = 1u;
+    child.inheritParentIndex = 0;
+    child.inheritInfluence = 0.5f;
+    child.hasFixedAxis = 1u;
+    child.fixedAxis[0] = 1.0f;
+
+    root.ikTargetIndex = 1; // root drives an IK chain targeting the child.
+    root.ikLoopCount = 40;
+    root.ikLimitAngle = 2.0f;
+    root.ikLinks = { 1 };
+
+    mesh.bones = { root, child };
+
+    for (int i = 0; i < 4; ++i)
+    {
+        MmdLab::MmdlSkinningVertex skinning{};
+        skinning.boneIndices[0] = (i < 2) ? 0 : 1;
+        skinning.boneWeights[0] = 1.0f;
+        mesh.skinning.push_back(skinning);
+    }
     return mesh;
 }
 } // namespace
@@ -100,10 +139,60 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
         MMDLAB_CHECK_EQUAL(expected.drawPackets[i].firstIndex, actual.drawPackets[i].firstIndex);
         MMDLAB_CHECK_EQUAL(expected.drawPackets[i].indexCount, actual.drawPackets[i].indexCount);
         MMDLAB_CHECK_EQUAL(expected.drawPackets[i].materialIndex, actual.drawPackets[i].materialIndex);
+        MMDLAB_CHECK_EQUAL(expected.drawPackets[i].refBoneOffset, actual.drawPackets[i].refBoneOffset);
+        MMDLAB_CHECK_EQUAL(expected.drawPackets[i].refBoneCount, actual.drawPackets[i].refBoneCount);
+    }
+
+    // Skin-reference-bone table round-trips.
+    MMDLAB_CHECK_EQUAL(expected.refBones.size(), actual.refBones.size());
+    for (std::size_t i = 0; i < expected.refBones.size(); ++i)
+    {
+        MMDLAB_CHECK_EQUAL(expected.refBones[i], actual.refBones[i]);
     }
 
     MMDLAB_CHECK_EQUAL(expected.strings[0], actual.strings[0]);
     MMDLAB_CHECK_EQUAL(expected.strings[1], actual.strings[1]);
+
+    // Skeleton + skinning round-trip.
+    MMDLAB_CHECK_EQUAL(expected.bones.size(), actual.bones.size());
+    MMDLAB_CHECK_EQUAL(expected.skinning.size(), actual.skinning.size());
+
+    for (std::size_t i = 0; i < expected.bones.size(); ++i)
+    {
+        MMDLAB_CHECK_EQUAL(expected.bones[i].name, actual.bones[i].name);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].parentIndex, actual.bones[i].parentIndex);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].hasLocalAxes, actual.bones[i].hasLocalAxes);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            MMDLAB_CHECK_EQUAL(expected.bones[i].position[axis], actual.bones[i].position[axis]);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].tail[axis], actual.bones[i].tail[axis]);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].localX[axis], actual.bones[i].localX[axis]);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].localZ[axis], actual.bones[i].localZ[axis]);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].fixedAxis[axis], actual.bones[i].fixedAxis[axis]);
+        }
+        MMDLAB_CHECK_EQUAL(expected.bones[i].hasInheritRotation, actual.bones[i].hasInheritRotation);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].hasInheritTranslation, actual.bones[i].hasInheritTranslation);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].inheritParentIndex, actual.bones[i].inheritParentIndex);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].inheritInfluence, actual.bones[i].inheritInfluence);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].hasFixedAxis, actual.bones[i].hasFixedAxis);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].ikTargetIndex, actual.bones[i].ikTargetIndex);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].ikLoopCount, actual.bones[i].ikLoopCount);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].ikLimitAngle, actual.bones[i].ikLimitAngle);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks.size(), actual.bones[i].ikLinks.size());
+        for (std::size_t link = 0; link < expected.bones[i].ikLinks.size(); ++link)
+        {
+            MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link], actual.bones[i].ikLinks[link]);
+        }
+    }
+
+    for (std::size_t i = 0; i < expected.skinning.size(); ++i)
+    {
+        for (int slot = 0; slot < 4; ++slot)
+        {
+            MMDLAB_CHECK_EQUAL(expected.skinning[i].boneIndices[slot], actual.skinning[i].boneIndices[slot]);
+            MMDLAB_CHECK_EQUAL(expected.skinning[i].boneWeights[slot], actual.skinning[i].boneWeights[slot]);
+        }
+    }
 
     for (int axis = 0; axis < 3; ++axis)
     {

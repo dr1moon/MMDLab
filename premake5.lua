@@ -27,6 +27,7 @@ local function ConfigureCppProject()
     systemversion "latest"
     warnings "Extra"
     characterset "Unicode"
+    buildoptions { "/utf-8" }
     targetdir "Build/Bin/%{cfg.buildcfg}/%{cfg.platform}"
     objdir "Build/Intermediate/%{prj.name}/%{cfg.buildcfg}/%{cfg.platform}"
     includedirs { "Source" }
@@ -51,7 +52,7 @@ project "ImGui"
         "Source/ThirdParty/imgui/backends/imgui_impl_dx12.cpp",
     }
 
-project "MmdRuntime"
+project "MmdCore"
     ConfigureCppProject()
     kind "StaticLib"
     includedirs {
@@ -64,6 +65,22 @@ project "MmdRuntime"
         "Source/Runtime/**.hpp",
         "Source/Runtime/**.cpp",
     }
+    -- The asset-pipeline (cook) translation units live in MmdCookLib, not the runtime.
+    removefiles {
+        "Source/Runtime/Asset/TextureCooker.cpp",
+        "Source/Runtime/Asset/PmxFile.cpp",
+        "Source/Runtime/Asset/MmdlWriter.cpp",
+    }
+
+project "MmdCookLib"
+    ConfigureCppProject()
+    kind "StaticLib"
+    files {
+        "Source/Runtime/Asset/TextureCooker.cpp",
+        "Source/Runtime/Asset/PmxFile.cpp",
+        "Source/Runtime/Asset/MmdlWriter.cpp",
+        "Source/ThirdParty/bc7enc/bc7enc.cpp",
+    }
 
 project "MmdViewer"
     ConfigureCppProject()
@@ -73,7 +90,7 @@ project "MmdViewer"
         "Source/App/MmdViewer/**.hpp",
         "Source/App/MmdViewer/**.cpp",
     }
-    links { "MmdRuntime", "ImGui", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
+    links { "MmdCore", "ImGui", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
 
 project "MmdCooker"
     ConfigureCppProject()
@@ -83,7 +100,7 @@ project "MmdCooker"
         "Source/Tools/MmdCooker/**.hpp",
         "Source/Tools/MmdCooker/**.cpp",
     }
-    links { "MmdRuntime" }
+    links { "MmdCookLib", "MmdCore" }
 
 project "MmdTests"
     ConfigureCppProject()
@@ -93,4 +110,4 @@ project "MmdTests"
         "Source/Tests/**.hpp",
         "Source/Tests/**.cpp",
     }
-    links { "MmdRuntime", "d3d12", "dxgi", "dxguid" }
+    links { "MmdCore", "MmdCookLib", "d3d12", "dxgi", "dxguid" }

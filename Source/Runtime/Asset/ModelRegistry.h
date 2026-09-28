@@ -28,6 +28,10 @@ public:
     // Throws std::runtime_error when the file cannot be parsed or converted.
     [[nodiscard]] static Model ParseModelFile(const std::filesystem::path& path);
 
+    // Loads one cooked .mmdl into a Model the same way, without any PMX parse. This is the fast
+    // path once an asset has been cooked offline.
+    [[nodiscard]] static Model ParseModelFileFromMmdl(const std::filesystem::path& path);
+
     // Installs a finished model into the registry and returns its index. GameThread-only.
     std::size_t AddModel(Model&& model);
 

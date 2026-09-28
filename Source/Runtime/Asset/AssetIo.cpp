@@ -58,18 +58,30 @@ uint32_t IoWorker::Run()
             },
             [&](const TextureDecodeRequest& r)
             {
+                const auto start = std::chrono::steady_clock::now();
                 TextureDecodeResult result;
                 result.levelIndex = r.levelIndex;
                 result.modelSlot = r.modelSlot;
                 result.textureIndex = r.textureIndex;
                 try
                 {
-                    result.image = DecodeImage(r.path);
+                    result.image = LoadTexture(r.path);
                     result.ok = true;
                 }
                 catch (const std::exception&)
                 {
                     result.ok = false;
+                }
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+                const std::string fileName = WideToUtf8(r.path.filename().wstring());
+                if (result.ok)
+                {
+                    LogInfo("Asset", std::format("Decoded texture '{}' in {} ms", fileName, ms));
+                }
+                else
+                {
+                    LogWarning("Asset", std::format("Failed to decode texture '{}'", fileName));
                 }
                 results_->Push(std::move(result));
             },

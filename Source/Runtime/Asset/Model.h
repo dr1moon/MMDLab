@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/ImageLoader.h"
 #include "Runtime/Asset/MeshAsset.h"
 #include "Runtime/Asset/Skeleton.h"
@@ -17,6 +18,7 @@ struct Model
     std::string name;
     MeshAsset mesh;
     Skeleton skeleton;
+    BindPose bindPose;                    // Inverse-bind matrices, computed once at load.
     std::vector<SkinningVertex> skinning; // Parallel to mesh.vertices.
     std::vector<Image> textures;
 };

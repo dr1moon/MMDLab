@@ -14,6 +14,14 @@ class ByteWriter
 public:
     void U8(const std::uint8_t value) { data_.push_back(value); }
 
+    void U16(const std::uint16_t value)
+    {
+        for (int i = 0; i < 2; ++i)
+        {
+            data_.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF));
+        }
+    }
+
     void U32(const std::uint32_t value)
     {
         for (int i = 0; i < 4; ++i)
@@ -85,8 +93,9 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
     }
 
     ByteWriter materialTable;
-    for (const Material& material : mesh.materials)
+    for (const MMDToonMaterial& material : mesh.materials)
     {
+        materialTable.U32(static_cast<std::uint32_t>(material.type));
         for (const float component : material.baseColor)
         {
             materialTable.F32(component);
@@ -118,10 +127,61 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         subMeshTable.U32(packet.firstIndex);
         subMeshTable.U32(packet.indexCount);
         subMeshTable.U32(packet.materialIndex);
+        subMeshTable.U32(packet.refBoneOffset);
+        subMeshTable.U32(packet.refBoneCount);
     }
 
+    ByteWriter skeleton;
+    skeleton.U32(static_cast<std::uint32_t>(mesh.bones.size()));
+    for (const MmdlBone& bone : mesh.bones)
+    {
+        skeleton.U32(static_cast<std::uint32_t>(bone.name.size()));
+        skeleton.Bytes(bone.name.data(), bone.name.size());
+        for (const float value : bone.position)
+        {
+            skeleton.F32(value);
+        }
+        for (const float value : bone.tail)
+        {
+            skeleton.F32(value);
+        }
+        skeleton.U16(bone.parentIndex);
+        skeleton.U32(bone.hasLocalAxes);
+        for (const float value : bone.localX)
+        {
+            skeleton.F32(value);
+        }
+        for (const float value : bone.localZ)
+        {
+            skeleton.F32(value);
+        }
+        skeleton.U32(bone.hasInheritRotation);
+        skeleton.U32(bone.hasInheritTranslation);
+        skeleton.U16(bone.inheritParentIndex);
+        skeleton.F32(bone.inheritInfluence);
+        skeleton.U32(bone.hasFixedAxis);
+        for (const float value : bone.fixedAxis)
+        {
+            skeleton.F32(value);
+        }
+        skeleton.U16(bone.ikTargetIndex);
+        skeleton.I32(bone.ikLoopCount);
+        skeleton.F32(bone.ikLimitAngle);
+        skeleton.U32(static_cast<std::uint32_t>(bone.ikLinks.size()));
+        for (const std::uint16_t link : bone.ikLinks)
+        {
+            skeleton.U16(link);
+        }
+    }
+
+    ByteWriter skinning;
+    skinning.Bytes(mesh.skinning.data(), mesh.skinning.size() * sizeof(MmdlSkinningVertex));
+
+    ByteWriter subMeshBoneTable;
+    subMeshBoneTable.Bytes(mesh.refBones.data(), mesh.refBones.size() * sizeof(std::uint16_t));
+
     // Assemble the file: header, chunk table, then the chunks.
-    const std::uint32_t chunkCount = 6;
+    const std::uint32_t chunkCount = 9;
     const std::uint64_t chunkTableOffset = sizeof(MmdlHeader);
 
     // Serialize the metadata chunk.
@@ -140,7 +200,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         metadataBytes.F32(value);
     }
 
-    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable };
+    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable };
     const std::uint32_t chunkTypes[] = {
         static_cast<std::uint32_t>(MmdlChunkType::StringTable),
         static_cast<std::uint32_t>(MmdlChunkType::MeshMetadata),
@@ -148,6 +208,9 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         static_cast<std::uint32_t>(MmdlChunkType::IndexBuffer),
         static_cast<std::uint32_t>(MmdlChunkType::MaterialTable),
         static_cast<std::uint32_t>(MmdlChunkType::SubMeshTable),
+        static_cast<std::uint32_t>(MmdlChunkType::Skeleton),
+        static_cast<std::uint32_t>(MmdlChunkType::SkinningVertexBuffer),
+        static_cast<std::uint32_t>(MmdlChunkType::SubMeshBoneTable),
     };
 
     std::uint64_t dataOffset = chunkTableOffset + static_cast<std::uint64_t>(chunkCount) * sizeof(MmdlChunkDescriptor);
