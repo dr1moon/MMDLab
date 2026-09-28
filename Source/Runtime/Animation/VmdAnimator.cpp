@@ -139,6 +139,17 @@ void VmdAnimator::SetMotion(VmdMotion motion)
             durationFrames_ = std::max(durationFrames_, static_cast<float>(key.frame));
         }
     }
+
+    morphTrackByName_.clear();
+    morphTrackByName_.reserve(motion_.morphTracks.size());
+    for (std::size_t i = 0; i < motion_.morphTracks.size(); ++i)
+    {
+        morphTrackByName_.emplace(motion_.morphTracks[i].morphName, i);
+        for (const VmdMorphKey& key : motion_.morphTracks[i].keys)
+        {
+            durationFrames_ = std::max(durationFrames_, static_cast<float>(key.frame));
+        }
+    }
     timeFrames_ = 0.0f;
 }
 
@@ -258,5 +269,43 @@ void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& o
             }
         }
     }
+}
+
+void VmdAnimator::SampleMorphWeights(const MorphSet& set, std::vector<float>& outWeights) const
+{
+    outWeights.assign(set.morphs.size(), 0.0f);
+    for (std::size_t i = 0; i < set.morphs.size(); ++i)
+    {
+        const auto it = morphTrackByName_.find(set.morphs[i].name);
+        if (it != morphTrackByName_.end())
+        {
+            outWeights[i] = SampleMorphWeight(motion_.morphTracks[it->second]);
+        }
+    }
+}
+
+float VmdAnimator::SampleMorphWeight(const VmdMorphTrack& track) const
+{
+    if (track.keys.empty())
+    {
+        return 0.0f;
+    }
+
+    const auto upper = std::upper_bound(track.keys.begin(), track.keys.end(), timeFrames_,
+        [](const float t, const VmdMorphKey& key) { return t < static_cast<float>(key.frame); });
+    if (upper == track.keys.begin())
+    {
+        return track.keys.front().weight;
+    }
+    if (upper == track.keys.end())
+    {
+        return track.keys.back().weight;
+    }
+
+    const VmdMorphKey& a = *(upper - 1);
+    const VmdMorphKey& b = *upper;
+    const float span = static_cast<float>(b.frame) - static_cast<float>(a.frame);
+    const float t = span > 0.0f ? (timeFrames_ - static_cast<float>(a.frame)) / span : 0.0f;
+    return a.weight + (b.weight - a.weight) * t;
 }
 } // namespace MmdLab

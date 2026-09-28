@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Animation/SkeletonPose.h"
+#include "Runtime/Asset/Morph.h"
 #include "Runtime/Asset/VmdFile.h"
 
 #include <cstddef>
@@ -42,11 +43,17 @@ public:
     // to enabled; IK on/off is discrete, so the most recent keyframe is held.
     void SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& outEnabled) const;
 
+    // Samples the morph tracks at the current time into `outWeights`, parallel to `set.morphs`
+    // (0 for a morph with no track). Morph weights are linearly interpolated between keyframes.
+    void SampleMorphWeights(const MorphSet& set, std::vector<float>& outWeights) const;
+
 private:
     [[nodiscard]] const VmdBoneTrack* FindTrack(const std::string& boneName) const;
+    [[nodiscard]] float SampleMorphWeight(const VmdMorphTrack& track) const;
 
     VmdMotion motion_;
     std::unordered_map<std::string, std::size_t> trackByBoneName_;
+    std::unordered_map<std::string, std::size_t> morphTrackByName_;
     float timeFrames_ = 0.0f;
     float durationFrames_ = 0.0f;
     bool playing_ = true;
