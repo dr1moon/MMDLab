@@ -84,6 +84,15 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         model.skinning.push_back(skinning);
     }
 
+    // Morphs arrive already cooked: vertex offsets reference mesh-local vertices, and bone/group
+    // offsets reference global indices. Build the name index for VMD morph-track lookup.
+    model.morphs.morphs = meshData.morphs;
+    model.morphs.indexByName.reserve(model.morphs.morphs.size());
+    for (std::size_t i = 0; i < model.morphs.morphs.size(); ++i)
+    {
+        model.morphs.indexByName.emplace(model.morphs.morphs[i].name, i);
+    }
+
     // Derive the inverse-bind matrices once so per-frame skeleton evaluation only needs to walk
     // the hierarchy and multiply; this is a pure function of the skeleton, so it is safe on the
     // I/O thread.

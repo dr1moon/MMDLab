@@ -138,6 +138,19 @@ std::uint16_t ReadBoneIndex(Reader& reader, const std::uint8_t boneIndexSize)
 {
     return static_cast<std::uint16_t>(ReadIndex(reader, boneIndexSize));
 }
+
+// Reads an unsigned index of the given size (1, 2, or 4 bytes), zero-extending to uint32. PMX
+// vertex indices are unsigned (a morph offset never references "no vertex").
+std::uint32_t ReadUIndex(Reader& reader, const std::uint8_t size)
+{
+    switch (size)
+    {
+    case 1: return reader.ReadU8();
+    case 2: return reader.ReadU16();
+    case 4: return reader.ReadU32();
+    default: throw std::runtime_error("Unsupported index size.");
+    }
+}
 } // namespace
 
 PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
@@ -184,10 +197,10 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
     const std::uint8_t additionalUvCount = reader.ReadU8();
     const std::uint8_t vertexIndexSize = reader.ReadU8();
     const std::uint8_t textureIndexSize = reader.ReadU8();
-    (void)reader.ReadU8(); // material index size (unused for static geometry).
+    const std::uint8_t materialIndexSize = reader.ReadU8();
     const std::uint8_t boneIndexSize = reader.ReadU8();
-    (void)reader.ReadU8(); // morph index size.
-    (void)reader.ReadU8(); // rigid body index size.
+    const std::uint8_t morphIndexSize = reader.ReadU8();
+    const std::uint8_t rigidBodyIndexSize = reader.ReadU8();
 
     const bool utf8 = textEncoding == 1;
 
@@ -430,6 +443,107 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         mesh.bones.push_back(std::move(bone));
     }
 
+    // Morphs: parse and store vertex, bone, and group morphs (the expression-critical kinds);
+    // UV, additional-UV, material, flip, and impulse morphs are read and discarded until a
+    // runtime consumer needs them.
+    const std::uint32_t morphCount = reader.ReadU32();
+    mesh.morphs.reserve(morphCount);
+    for (std::uint32_t m = 0; m < morphCount; ++m)
+    {
+        Morph morph;
+        morph.name = ReadString(reader, utf8);
+        morph.nameEn = ReadString(reader, utf8);
+        morph.panel = reader.ReadU8();
+        const std::uint8_t kindByte = reader.ReadU8();
+        morph.kind = static_cast<MorphKind>(kindByte);
+        const std::uint32_t offsetCount = reader.ReadU32();
+        for (std::uint32_t o = 0; o < offsetCount; ++o)
+        {
+            switch (kindByte)
+            {
+            case 0: // Group.
+            {
+                GroupMorphItem item;
+                item.morphIndex = static_cast<std::uint32_t>(ReadIndex(reader, morphIndexSize));
+                item.ratio = reader.ReadF32();
+                morph.groupItems.push_back(item);
+                break;
+            }
+            case 1: // Vertex.
+            {
+                VertexMorphDelta delta;
+                delta.vertexIndex = ReadUIndex(reader, vertexIndexSize);
+                for (float& value : delta.positionDelta) { value = reader.ReadF32(); }
+                morph.vertexDeltas.push_back(delta);
+                break;
+            }
+            case 2: // Bone.
+            {
+                BoneMorphDelta delta;
+                delta.boneIndex = static_cast<std::uint16_t>(ReadIndex(reader, boneIndexSize));
+                for (float& value : delta.positionDelta) { value = reader.ReadF32(); }
+                for (float& value : delta.rotationDelta) { value = reader.ReadF32(); }
+                morph.boneDeltas.push_back(delta);
+                break;
+            }
+            case 3: // UV.
+                ReadUIndex(reader, vertexIndexSize);
+                reader.Skip(4 * 4);
+                break;
+            case 4: // Additional UV slots (one per slot).
+            case 5:
+            case 6:
+            case 7:
+                ReadUIndex(reader, vertexIndexSize);
+                reader.Skip(4 * 4);
+                break;
+            case 8: // Material.
+                ReadIndex(reader, materialIndexSize);
+                reader.Skip(1);      // Offset operator (multiply/add).
+                reader.Skip(28 * 4); // Diffuse, specular, ambient, edge, texture tints (28 floats).
+                break;
+            case 9: // Flip: like a group morph referencing another morph.
+                ReadIndex(reader, morphIndexSize);
+                reader.Skip(4); // Ratio.
+                break;
+            case 10: // Impulse: rigid-body reference plus velocities.
+                ReadIndex(reader, rigidBodyIndexSize);
+                reader.Skip(1);     // Is-local flag.
+                reader.Skip(6 * 4); // Movement velocity and rotation torque.
+                break;
+            default:
+                throw std::runtime_error("Unknown PMX morph kind.");
+            }
+        }
+        mesh.morphs.push_back(std::move(morph));
+    }
+
+    // Validate morph references (vertex, bone, and group morphs only).
+    for (const Morph& morph : mesh.morphs)
+    {
+        for (const VertexMorphDelta& delta : morph.vertexDeltas)
+        {
+            if (delta.vertexIndex >= vertexCount)
+            {
+                throw std::runtime_error("PMX vertex morph references an out-of-range vertex.");
+            }
+        }
+        for (const BoneMorphDelta& delta : morph.boneDeltas)
+        {
+            if (delta.boneIndex >= mesh.bones.size())
+            {
+                throw std::runtime_error("PMX bone morph references an out-of-range bone.");
+            }
+        }
+        for (const GroupMorphItem& item : morph.groupItems)
+        {
+            if (item.morphIndex >= morphCount)
+            {
+                throw std::runtime_error("PMX group morph references an out-of-range morph.");
+            }
+        }
+    }
+
     // Validate: each triangle index is in range, and the materials' index counts cover the
     // whole index buffer exactly.
     for (const std::uint32_t index : mesh.indices)
@@ -564,6 +678,9 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
     // set of local indices that is valid for every submesh).
     mesh.drawPackets.reserve(pmx.materials.size());
     mesh.refBones.clear();
+    // Global PMX vertex -> every local (.mmdl) vertex that duplicates it, accumulated across the
+    // submesh loop below so vertex morphs can be fanned out afterward.
+    std::vector<std::vector<std::uint32_t>> globalToLocal(pmx.vertices.size());
     std::uint32_t materialFirstIndex = 0;
     for (std::uint32_t m = 0; m < pmx.materials.size(); ++m)
     {
@@ -587,6 +704,7 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
             {
                 vertexRemap[globalVertex] = static_cast<std::int32_t>(localToGlobal.size());
                 localToGlobal.push_back(globalVertex);
+                globalToLocal[globalVertex].push_back(static_cast<std::uint32_t>(mesh.vertices.size()));
 
                 const PmxVertex& source = pmx.vertices[globalVertex];
                 MmdlVertex out{};
@@ -666,6 +784,33 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
 
         mesh.drawPackets.push_back(packet);
         materialFirstIndex += indexCount;
+    }
+
+    // Cook morphs: fan each vertex morph's global vertex offset out to every per-submesh copy of
+    // that vertex, so the runtime representation references mesh-local vertices directly. Bone and
+    // group morphs reference global bone/morph indices and pass through unchanged.
+    mesh.morphs.reserve(pmx.morphs.size());
+    for (const Morph& source : pmx.morphs)
+    {
+        Morph morph = source; // Name, panel, kind, bone, and group offsets carry straight through.
+        if (morph.kind == MorphKind::Vertex)
+        {
+            morph.vertexDeltas.clear();
+            for (const VertexMorphDelta& delta : source.vertexDeltas)
+            {
+                for (const std::uint32_t localIndex : globalToLocal[delta.vertexIndex])
+                {
+                    VertexMorphDelta fan;
+                    fan.vertexIndex = localIndex;
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        fan.positionDelta[axis] = delta.positionDelta[axis];
+                    }
+                    morph.vertexDeltas.push_back(fan);
+                }
+            }
+        }
+        mesh.morphs.push_back(std::move(morph));
     }
 
     return mesh;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Asset/Material.h"
+#include "Runtime/Asset/Morph.h"
 #include "Runtime/Asset/Skeleton.h"
 #include "Runtime/Core/FrameResource.h"
 
@@ -15,7 +16,7 @@ namespace MmdLab
 // no pointers, raw C++ containers, or compiler-dependent enums.
 
 inline constexpr std::uint32_t MmdlMagic = 0x4C444D4D; // "MMDL".
-inline constexpr std::uint32_t MmdlVersion = 7;
+inline constexpr std::uint32_t MmdlVersion = 8;
 
 enum class MmdlChunkType : std::uint32_t
 {
@@ -28,6 +29,7 @@ enum class MmdlChunkType : std::uint32_t
     Skeleton = 7,
     SkinningVertexBuffer = 8,
     SubMeshBoneTable = 9,
+    Morph = 10,
 };
 
 // Fixed file header at offset 0.
@@ -138,6 +140,11 @@ struct MmdlMeshData
     // DrawPacket::refBoneOffset/refBoneCount. Each submesh's list has <= 256 entries so the
     // per-vertex u8 indices above stay in range.
     std::vector<std::uint16_t> refBones;
+
+    // Cooked morphs. Vertex-morph offsets reference mesh-local vertex indices (the converter fans
+    // global PMX offsets out to every per-submesh copy); bone and group morphs reference global
+    // bone/morph indices.
+    std::vector<Morph> morphs;
 
     // Model-space bounds of the vertex positions. The source populates them (the PMX converter
     // computes them; the .mmdl reader reads the cooked values) so downstream consumers never

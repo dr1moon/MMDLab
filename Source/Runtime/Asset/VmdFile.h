@@ -43,17 +43,33 @@ struct VmdShowIkKeyframe
     std::vector<VmdIkBoneState> ikBones;  // IK on/off states, in file order.
 };
 
-// A parsed VMD motion: the model name, the bone tracks, and the show/IK keyframes. VMD is a
-// MikuMikuDance file-format identifier; the morph, camera, light, and self-shadow sections are
-// skipped because no runtime consumer exists yet.
+// One morph keyframe: a frame index (30 fps) and the morph weight at that frame.
+struct VmdMorphKey
+{
+    std::uint32_t frame = 0;
+    float weight = 0.0f;
+};
+
+// One morph's keyframes, sorted by frame. Keyed by the morph's UTF-8 name.
+struct VmdMorphTrack
+{
+    std::string morphName;
+    std::vector<VmdMorphKey> keys;
+};
+
+// A parsed VMD motion: the model name, the bone tracks, the morph tracks, and the show/IK
+// keyframes. VMD is a MikuMikuDance file-format identifier; the camera, light, and self-shadow
+// sections are skipped because no runtime consumer exists yet.
 struct VmdMotion
 {
     std::string modelName;
     std::vector<VmdBoneTrack> boneTracks;
+    std::vector<VmdMorphTrack> morphTracks;        // Sorted by frame within each track.
     std::vector<VmdShowIkKeyframe> showIkKeyframes; // Sorted by frame.
 };
 
-// Parses the header and bone-motion section of a VMD 2.0 file. Bone and model names are
-// Shift-JIS encoded and are converted to UTF-8. Throws std::runtime_error on malformed input.
+// Parses the header, bone-motion, and morph-motion sections of a VMD 2.0 file. Bone and model
+// names are Shift-JIS encoded and are converted to UTF-8. Throws std::runtime_error on malformed
+// input.
 [[nodiscard]] VmdMotion ParseVmdFile(const std::filesystem::path& path);
 } // namespace MmdLab

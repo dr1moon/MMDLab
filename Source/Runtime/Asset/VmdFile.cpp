@@ -196,14 +196,46 @@ VmdMotion ParseVmdFile(const std::filesystem::path& path)
             [](const VmdBoneKey& a, const VmdBoneKey& b) { return a.frame < b.frame; });
     }
 
-    // Skip the morph (23 bytes/key), camera (61), light (28), and self-shadow (9) sections; each
-    // is fixed length per keyframe. The show/IK section follows and is self-describing (an
-    // explicit per-keyframe IK-bone count plus per-bone names), so it is parsed model-
-    // independently. Older files may end before any trailing section, so each read is guarded.
+    // Parse the morph section, then skip the camera (61), light (28), and self-shadow (9)
+    // sections; each skipped section is fixed length per keyframe. The show/IK section follows and
+    // is self-describing (an explicit per-keyframe IK-bone count plus per-bone names), so it is
+    // parsed model-independently. Older files may end before any trailing section, so each read is
+    // guarded.
     if (reader.Remaining() >= 4)
     {
         const std::uint32_t morphCount = reader.ReadU32();
-        reader.Skip(static_cast<std::size_t>(morphCount) * 23);
+        motion.morphTracks.reserve(morphCount);
+        for (std::uint32_t i = 0; i < morphCount; ++i)
+        {
+            std::uint8_t name[15];
+            reader.ReadBytes(name, sizeof(name));
+            const std::string morphName = ShiftJisToUtf8(name, sizeof(name));
+
+            VmdMorphKey key;
+            key.frame = reader.ReadU32();
+            key.weight = reader.ReadF32();
+
+            // Append to the matching track, or start one. As with bone tracks, a linear scan keeps
+            // the parser simple; VMD files emit a morph's keyframes contiguously.
+            auto track = std::find_if(motion.morphTracks.begin(), motion.morphTracks.end(),
+                [&](const VmdMorphTrack& candidate) { return candidate.morphName == morphName; });
+            if (track == motion.morphTracks.end())
+            {
+                VmdMorphTrack newTrack;
+                newTrack.morphName = morphName;
+                newTrack.keys.push_back(key);
+                motion.morphTracks.push_back(std::move(newTrack));
+            }
+            else
+            {
+                track->keys.push_back(key);
+            }
+        }
+        for (VmdMorphTrack& track : motion.morphTracks)
+        {
+            std::sort(track.keys.begin(), track.keys.end(),
+                [](const VmdMorphKey& a, const VmdMorphKey& b) { return a.frame < b.frame; });
+        }
     }
     if (reader.Remaining() >= 4)
     {

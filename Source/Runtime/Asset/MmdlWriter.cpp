@@ -180,8 +180,42 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
     ByteWriter subMeshBoneTable;
     subMeshBoneTable.Bytes(mesh.refBones.data(), mesh.refBones.size() * sizeof(std::uint16_t));
 
+    ByteWriter morphChunk;
+    morphChunk.U32(static_cast<std::uint32_t>(mesh.morphs.size()));
+    for (const Morph& morph : mesh.morphs)
+    {
+        morphChunk.U32(static_cast<std::uint32_t>(morph.name.size()));
+        morphChunk.Bytes(morph.name.data(), morph.name.size());
+        morphChunk.U32(static_cast<std::uint32_t>(morph.nameEn.size()));
+        morphChunk.Bytes(morph.nameEn.data(), morph.nameEn.size());
+        morphChunk.U8(morph.panel);
+        morphChunk.U8(static_cast<std::uint8_t>(morph.kind));
+
+        morphChunk.U32(static_cast<std::uint32_t>(morph.vertexDeltas.size()));
+        for (const VertexMorphDelta& delta : morph.vertexDeltas)
+        {
+            morphChunk.U32(delta.vertexIndex);
+            for (const float value : delta.positionDelta) { morphChunk.F32(value); }
+        }
+
+        morphChunk.U32(static_cast<std::uint32_t>(morph.boneDeltas.size()));
+        for (const BoneMorphDelta& delta : morph.boneDeltas)
+        {
+            morphChunk.U16(delta.boneIndex);
+            for (const float value : delta.positionDelta) { morphChunk.F32(value); }
+            for (const float value : delta.rotationDelta) { morphChunk.F32(value); }
+        }
+
+        morphChunk.U32(static_cast<std::uint32_t>(morph.groupItems.size()));
+        for (const GroupMorphItem& item : morph.groupItems)
+        {
+            morphChunk.U32(item.morphIndex);
+            morphChunk.F32(item.ratio);
+        }
+    }
+
     // Assemble the file: header, chunk table, then the chunks.
-    const std::uint32_t chunkCount = 9;
+    const std::uint32_t chunkCount = 10;
     const std::uint64_t chunkTableOffset = sizeof(MmdlHeader);
 
     // Serialize the metadata chunk.
@@ -200,7 +234,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         metadataBytes.F32(value);
     }
 
-    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable };
+    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable, &morphChunk };
     const std::uint32_t chunkTypes[] = {
         static_cast<std::uint32_t>(MmdlChunkType::StringTable),
         static_cast<std::uint32_t>(MmdlChunkType::MeshMetadata),
@@ -211,6 +245,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         static_cast<std::uint32_t>(MmdlChunkType::Skeleton),
         static_cast<std::uint32_t>(MmdlChunkType::SkinningVertexBuffer),
         static_cast<std::uint32_t>(MmdlChunkType::SubMeshBoneTable),
+        static_cast<std::uint32_t>(MmdlChunkType::Morph),
     };
 
     std::uint64_t dataOffset = chunkTableOffset + static_cast<std::uint64_t>(chunkCount) * sizeof(MmdlChunkDescriptor);

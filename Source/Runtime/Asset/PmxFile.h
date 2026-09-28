@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Asset/MmdlFormat.h"
+#include "Runtime/Asset/Morph.h"
 #include "Runtime/Asset/Skeleton.h"
 
 #include <cstdint>
@@ -95,7 +96,10 @@ struct PmxBone
     std::vector<PmxIkLink> ikLinks;
 };
 
-// The parsed geometry and skeleton of a PMX model. Morphs and physics sections are not parsed yet.
+// The parsed geometry, skeleton, and morphs of a PMX model. The physics section is not parsed
+// yet; morphs are parsed (vertex, bone, and group stored; UV, material, flip, and impulse
+// skipped). Vertex-morph offsets reference global PMX vertex indices here; ConvertPmxToMmdl fans
+// them out to mesh-local indices.
 struct PmxStaticMesh
 {
     std::string modelName;
@@ -104,10 +108,11 @@ struct PmxStaticMesh
     std::vector<std::string> textures;
     std::vector<PmxMaterial> materials;
     std::vector<PmxBone> bones;
+    std::vector<Morph> morphs;
 };
 
-// Parses the geometry and skeleton of a PMX 2.0/2.1 file: header, model info, vertices (with
-// skinning), indices, textures, materials, and bones. Skips morphs and physics. Throws
+// Parses the geometry, skeleton, and morphs of a PMX 2.0/2.1 file: header, model info, vertices
+// (with skinning), indices, textures, materials, bones, and morphs. Skips physics. Throws
 // std::runtime_error on malformed or unsupported input.
 [[nodiscard]] PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path);
 

@@ -29,6 +29,12 @@ public:
         return value;
     }
 
+    std::uint8_t ReadU8()
+    {
+        Check(1);
+        return data_[offset_++];
+    }
+
     std::uint16_t ReadU16()
     {
         Check(2);
@@ -144,6 +150,7 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
     const MmdlChunkDescriptor* skeletonChunk = nullptr;
     const MmdlChunkDescriptor* skinningChunk = nullptr;
     const MmdlChunkDescriptor* refBoneChunk = nullptr;
+    const MmdlChunkDescriptor* morphChunk = nullptr;
 
     for (const MmdlChunkDescriptor& descriptor : descriptors)
     {
@@ -186,6 +193,9 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             break;
         case MmdlChunkType::SubMeshBoneTable:
             refBoneChunk = &descriptor;
+            break;
+        case MmdlChunkType::Morph:
+            morphChunk = &descriptor;
             break;
         case MmdlChunkType::MeshMetadata:
         {
@@ -314,6 +324,61 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
         std::memcpy(mesh.refBones.data(), data.data() + refBoneChunk->offset, refBoneChunk->size);
     }
 
+    // Morphs (each carries its names inline, like the skeleton).
+    if (morphChunk != nullptr)
+    {
+        Reader reader(data.data() + morphChunk->offset, static_cast<std::size_t>(morphChunk->size));
+        const std::uint32_t morphCount = reader.ReadU32();
+        mesh.morphs.reserve(morphCount);
+        for (std::uint32_t m = 0; m < morphCount; ++m)
+        {
+            Morph morph;
+            const std::uint32_t nameLength = reader.ReadU32();
+            std::string name(nameLength, '\0');
+            reader.ReadBytes(reinterpret_cast<std::uint8_t*>(name.data()), nameLength);
+            morph.name = std::move(name);
+            const std::uint32_t nameEnLength = reader.ReadU32();
+            std::string nameEn(nameEnLength, '\0');
+            reader.ReadBytes(reinterpret_cast<std::uint8_t*>(nameEn.data()), nameEnLength);
+            morph.nameEn = std::move(nameEn);
+            morph.panel = reader.ReadU8();
+            morph.kind = static_cast<MorphKind>(reader.ReadU8());
+
+            const std::uint32_t vertexDeltaCount = reader.ReadU32();
+            morph.vertexDeltas.reserve(vertexDeltaCount);
+            for (std::uint32_t i = 0; i < vertexDeltaCount; ++i)
+            {
+                VertexMorphDelta delta;
+                delta.vertexIndex = reader.ReadU32();
+                for (float& value : delta.positionDelta) { value = reader.ReadF32(); }
+                morph.vertexDeltas.push_back(delta);
+            }
+
+            const std::uint32_t boneDeltaCount = reader.ReadU32();
+            morph.boneDeltas.reserve(boneDeltaCount);
+            for (std::uint32_t i = 0; i < boneDeltaCount; ++i)
+            {
+                BoneMorphDelta delta;
+                delta.boneIndex = reader.ReadU16();
+                for (float& value : delta.positionDelta) { value = reader.ReadF32(); }
+                for (float& value : delta.rotationDelta) { value = reader.ReadF32(); }
+                morph.boneDeltas.push_back(delta);
+            }
+
+            const std::uint32_t groupItemCount = reader.ReadU32();
+            morph.groupItems.reserve(groupItemCount);
+            for (std::uint32_t i = 0; i < groupItemCount; ++i)
+            {
+                GroupMorphItem item;
+                item.morphIndex = reader.ReadU32();
+                item.ratio = reader.ReadF32();
+                morph.groupItems.push_back(item);
+            }
+
+            mesh.morphs.push_back(std::move(morph));
+        }
+    }
+
     // Validate indices and sub-mesh ranges.
     for (const std::uint32_t index : mesh.indices)
     {
@@ -338,6 +403,32 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
     if (totalIndices != indexCount)
     {
         throw std::runtime_error(".mmdl sub-mesh ranges do not sum to the index count.");
+    }
+
+    // Validate morph references.
+    for (const Morph& morph : mesh.morphs)
+    {
+        for (const VertexMorphDelta& delta : morph.vertexDeltas)
+        {
+            if (delta.vertexIndex >= vertexCount)
+            {
+                throw std::runtime_error(".mmdl vertex morph references an out-of-range vertex.");
+            }
+        }
+        for (const BoneMorphDelta& delta : morph.boneDeltas)
+        {
+            if (delta.boneIndex >= mesh.bones.size())
+            {
+                throw std::runtime_error(".mmdl bone morph references an out-of-range bone.");
+            }
+        }
+        for (const GroupMorphItem& item : morph.groupItems)
+        {
+            if (item.morphIndex >= mesh.morphs.size())
+            {
+                throw std::runtime_error(".mmdl group morph references an out-of-range morph.");
+            }
+        }
     }
 
     return mesh;

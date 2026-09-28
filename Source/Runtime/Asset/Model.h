@@ -3,6 +3,7 @@
 #include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/ImageLoader.h"
 #include "Runtime/Asset/MeshAsset.h"
+#include "Runtime/Asset/Morph.h"
 #include "Runtime/Asset/Skeleton.h"
 
 #include <string>
@@ -21,5 +22,6 @@ struct Model
     BindPose bindPose;                    // Inverse-bind matrices, computed once at load.
     std::vector<SkinningVertex> skinning; // Parallel to mesh.vertices.
     std::vector<Image> textures;
+    MorphSet morphs; // Morph offsets (vertex offsets mesh-local); name-indexed for VMD lookup.
 };
 } // namespace MmdLab
