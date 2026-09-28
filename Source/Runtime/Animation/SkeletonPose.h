@@ -41,12 +41,15 @@ struct BonePose
 
 // Evaluates the skinning palette (world_i * inverseBind_i) for every bone, ready for the vertex
 // shader to consume as its bone-matrix array. `motionPose` may be null for the bind pose, in
-// which case the palette is the identity and skinning reproduces the static mesh. `scratchWorld`
-// is reused across calls so the per-bone world matrices are not allocated every evaluation.
+// which case the palette is the identity and skinning reproduces the static mesh. `ikEnabled`,
+// when non-null, is parallel to `skeleton.ikChains` and disables solving for the chains whose
+// entry is false (null means every chain is solved). `scratchWorld` is reused across calls so
+// the per-bone world matrices are not allocated every evaluation.
 void EvaluateSkeletonPose(
     const Skeleton& skeleton,
     const BindPose& bindPose,
     const BonePose* motionPose,
     std::vector<DirectX::XMFLOAT4X4>& outPalette,
-    std::vector<DirectX::XMMATRIX>& scratchWorld);
+    std::vector<DirectX::XMMATRIX>& scratchWorld,
+    const std::vector<bool>* ikEnabled = nullptr);
 } // namespace MmdLab

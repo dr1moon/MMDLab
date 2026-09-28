@@ -191,7 +191,7 @@ void SolveLookAtIk(const IkChain& chain, const Skeleton& skeleton,
 // Two-link IK (analytic two-bone solve): [joint, upper] reaches its target so the end bone lands
 // on the IK bone's position; the knee bends toward the thigh's local -X axis (the forward
 // direction the auto-roll establishes).
-void SolveTwoBoneIk(const IkChain& chain, const Skeleton& skeleton,
+void SolveTwoBoneIk(const IkChain& chain, const Skeleton& skeleton, const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
 {
     using namespace DirectX;
@@ -228,19 +228,25 @@ void SolveTwoBoneIk(const IkChain& chain, const Skeleton& skeleton,
         desiredDir = desiredDelta / desiredLength;
     }
 
-    // Pole: the knee direction. The auto-roll points the thigh's local +X toward the model's
-    // back, so the knee (which bends forward) is the negation of that axis.
-    const XMVECTOR pole = XMVector3Normalize(XMVectorNegate(world[upper].r[0]));
+    // Pole: the knee bend direction. The auto-roll points the thigh's bind local +X toward the
+    // model's back, so the knee bends toward -X ("forward"). Using the bind axis (not the
+    // animated world X) keeps the pole fixed as the thigh's VMD rotation swings, so the knee
+    // cannot flip side to side; it still follows the body's orientation via the parent chain.
+    const std::uint16_t upperParent = skeleton.bones[upper].parentIndex;
+    const XMMATRIX upperParentWorld = (upperParent != kInvalidBoneIndex
+        && static_cast<std::size_t>(upperParent) < count)
+        ? world[static_cast<std::size_t>(upperParent)]
+        : XMMatrixIdentity();
+    const XMVECTOR bindX = XMLoadFloat4x4(&bindPose.bindRotation[upper]).r[0];
+    const XMVECTOR pole = XMVector3Normalize(XMVector3TransformNormal(XMVectorNegate(bindX), upperParentWorld));
 
     XMVECTOR bendDir = pole - XMVector3Dot(pole, desiredDir) * desiredDir;
     if (XMVectorGetX(XMVector3LengthSq(bendDir)) < 1e-10f)
     {
-        bendDir = XMVector3Cross(desiredDir, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-        if (XMVectorGetX(XMVector3LengthSq(bendDir)) < 1e-10f)
-        {
-            bendDir = XMVector3Cross(desiredDir, XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f));
-        }
-        bendDir = XMVector3Normalize(bendDir);
+        // The pole is collinear with the reach direction (knee/elbow pointing straight at the
+        // target): pick a stable perpendicular instead. XMVector3Orthogonal chooses the best axis
+        // up front, mirroring Unreal's FindBestAxisVectors fallback rather than a hardcoded cross.
+        bendDir = XMVector3Orthogonal(desiredDir);
     }
     else
     {
@@ -306,21 +312,28 @@ void SolveTwoBoneIk(const IkChain& chain, const Skeleton& skeleton,
     PropagateWorld(skeleton, local, world, upper, joint);
 }
 
-// Solves every IK chain the asset declared, dispatching to the solver that matches the chain
+// Solves the IK chains the asset declared, dispatching to the solver that matches the chain
 // length. A 1-link chain is a LookAt (aim), a 2-link chain is an analytic two-bone solve; other
-// lengths are not yet supported.
-void SolveIk(const Skeleton& skeleton, const std::vector<DirectX::XMMATRIX>& local,
-    std::vector<DirectX::XMMATRIX>& world)
+// lengths are not yet supported. `ikEnabled` is parallel to `skeleton.ikChains`; a null pointer
+// solves every chain, otherwise a false entry skips that chain.
+void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
+    const std::vector<bool>* ikEnabled)
 {
-    for (const IkChain& chain : skeleton.ikChains)
+    for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
     {
+        if (ikEnabled != nullptr && i < ikEnabled->size() && !(*ikEnabled)[i])
+        {
+            continue;
+        }
+        const IkChain& chain = skeleton.ikChains[i];
         if (chain.links.size() == 1)
         {
             SolveLookAtIk(chain, skeleton, local, world);
         }
         else if (chain.links.size() == 2)
         {
-            SolveTwoBoneIk(chain, skeleton, local, world);
+            SolveTwoBoneIk(chain, skeleton, bindPose, local, world);
         }
     }
 }
@@ -511,7 +524,8 @@ void EvaluateSkeletonPose(
     const BindPose& bindPose,
     const BonePose* motionPose,
     std::vector<DirectX::XMFLOAT4X4>& outPalette,
-    std::vector<DirectX::XMMATRIX>& scratchWorld)
+    std::vector<DirectX::XMMATRIX>& scratchWorld,
+    const std::vector<bool>* ikEnabled)
 {
     using namespace DirectX;
 
@@ -544,7 +558,7 @@ void EvaluateSkeletonPose(
     // Solve the IK chains on top of the animated pose (the bind pose needs no solving).
     if (hasMotion)
     {
-        SolveIk(skeleton, local, scratchWorld);
+        SolveIk(skeleton, bindPose, local, scratchWorld, ikEnabled);
     }
 
     // Apply the per-bone constraints and "付与" grants. Axis constraints run first so the

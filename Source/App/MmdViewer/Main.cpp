@@ -242,13 +242,15 @@ int wmain(const int argc, wchar_t* argv[])
             std::vector<DirectX::XMFLOAT4X4> palette;
             std::vector<DirectX::XMMATRIX> worldScratch;
             MmdLab::BonePose motionPose;
+            std::vector<bool> ikEnabled;
             for (std::size_t m = 0; m < models.size(); ++m)
             {
                 const MmdLab::Model& model = models[m];
                 if (world.Animator().HasMotion())
                 {
                     world.Animator().SamplePose(model.skeleton, model.bindPose, motionPose);
-                    MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, &motionPose, palette, worldScratch);
+                    world.Animator().SampleIkEnabled(model.skeleton, ikEnabled);
+                    MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, &motionPose, palette, worldScratch, &ikEnabled);
                 }
                 else
                 {

@@ -61,6 +61,30 @@ std::vector<std::uint8_t> BuildTestVmd()
     AppendF32(bytes, 0.0f); AppendF32(bytes, 0.0f); AppendF32(bytes, 0.0f); AppendF32(bytes, 1.0f);
     for (int i = 0; i < 64; ++i) bytes.push_back(0);
 
+    AppendU32(bytes, 0); // Morph keyframe count.
+    AppendU32(bytes, 0); // Camera keyframe count.
+    AppendU32(bytes, 0); // Light keyframe count.
+    AppendU32(bytes, 0); // Self-shadow keyframe count.
+
+    // Show/IK section: two keyframes that toggle two IK bones by name.
+    AppendU32(bytes, 2); // Show/IK keyframe count.
+
+    AppendU32(bytes, 0); // Frame 0.
+    bytes.push_back(1);  // Show flag.
+    AppendU32(bytes, 2); // Two IK bones.
+    AppendFixedString(bytes, "footIK", 20);
+    bytes.push_back(1);  // footIK enabled.
+    AppendFixedString(bytes, "handIK", 20);
+    bytes.push_back(0);  // handIK disabled.
+
+    AppendU32(bytes, 60); // Frame 60.
+    bytes.push_back(1);   // Show flag.
+    AppendU32(bytes, 2);  // Two IK bones.
+    AppendFixedString(bytes, "footIK", 20);
+    bytes.push_back(0);  // footIK disabled.
+    AppendFixedString(bytes, "handIK", 20);
+    bytes.push_back(1);  // handIK enabled.
+
     return bytes;
 }
 } // namespace
@@ -100,4 +124,17 @@ MMDLAB_TEST(Asset.Vmd, ParsesBoneMotion)
     MMDLAB_CHECK(boneA->keys[1].position[2] == 3.0f);
     MMDLAB_CHECK(boneA->keys[0].rotation[3] == 1.0f);
     MMDLAB_CHECK(boneB->keys[0].frame == 0);
+
+    // The show/IK section is parsed: two keyframes, each toggling two IK bones by name.
+    MMDLAB_CHECK(motion.showIkKeyframes.size() == 2);
+    MMDLAB_CHECK(motion.showIkKeyframes[0].frame == 0);
+    MMDLAB_CHECK(motion.showIkKeyframes[0].show == true);
+    MMDLAB_CHECK(motion.showIkKeyframes[0].ikBones.size() == 2);
+    MMDLAB_CHECK(motion.showIkKeyframes[0].ikBones[0].ikBoneName == "footIK");
+    MMDLAB_CHECK(motion.showIkKeyframes[0].ikBones[0].enabled == true);
+    MMDLAB_CHECK(motion.showIkKeyframes[0].ikBones[1].ikBoneName == "handIK");
+    MMDLAB_CHECK(motion.showIkKeyframes[0].ikBones[1].enabled == false);
+    MMDLAB_CHECK(motion.showIkKeyframes[1].frame == 60);
+    MMDLAB_CHECK(motion.showIkKeyframes[1].ikBones[0].enabled == false);
+    MMDLAB_CHECK(motion.showIkKeyframes[1].ikBones[1].enabled == true);
 }

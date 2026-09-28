@@ -284,3 +284,126 @@ MMDLAB_TEST(Animation.SkeletonPose, LookAtIkAimsToeAtTarget)
     MMDLAB_CHECK(std::fabs(XMVectorGetY(footDir) - XMVectorGetY(targetDir)) < 1e-4f);
     MMDLAB_CHECK(std::fabs(XMVectorGetZ(footDir) - XMVectorGetZ(targetDir)) < 1e-4f);
 }
+
+MMDLAB_TEST(Animation.SkeletonPose, DisabledIkKeepsAnkleAtBind)
+{
+    using namespace DirectX;
+
+    // The same leg chain as TwoBoneIkPlacesAnkleAtTarget, but the chain is disabled via
+    // `ikEnabled`, so the ankle must keep its bind position instead of reaching the IK target.
+    MmdLab::Skeleton skeleton;
+    const auto AddBone = [&](const char* name, float px, float py, float pz, float tx, float ty, float tz,
+        std::uint16_t parent)
+    {
+        MmdLab::Bone bone;
+        bone.name = name;
+        bone.position[0] = px; bone.position[1] = py; bone.position[2] = pz;
+        bone.tail[0] = tx; bone.tail[1] = ty; bone.tail[2] = tz;
+        bone.parentIndex = parent;
+        skeleton.bones.push_back(std::move(bone));
+    };
+    AddBone("thigh", 0, 0, 0, 0, -1, 0, MmdLab::kInvalidBoneIndex);
+    AddBone("knee", 0, -1, 0, 0, -1, 1, 0);
+    AddBone("ankle", 0, -1, 1, 0, -1, 2, 1);
+    AddBone("foot_ik", 0, 0, 0, 0, 0, 1, MmdLab::kInvalidBoneIndex);
+
+    skeleton.children.resize(4);
+    skeleton.children[0].push_back(1);
+    skeleton.children[1].push_back(2);
+
+    MmdLab::IkChain chain;
+    chain.ikBoneIndex = 3;
+    chain.targetBoneIndex = 2; // ankle
+    chain.links = { 1, 0 };    // knee, thigh (tip-to-root)
+    skeleton.ikChains.push_back(chain);
+
+    const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
+
+    const XMVECTOR target = XMVectorSet(0.0f, -0.5f, 1.2f, 0.0f);
+
+    MmdLab::BonePose motion;
+    motion.local.resize(4);
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        motion.local[i] = bind.localBind[i];
+    }
+    XMStoreFloat4x4(&motion.local[3], XMMatrixTranslationFromVector(target));
+
+    const std::vector<bool> ikEnabled = { false };
+    std::vector<XMFLOAT4X4> palette;
+    std::vector<XMMATRIX> world;
+    MmdLab::EvaluateSkeletonPose(skeleton, bind, &motion, palette, world, &ikEnabled);
+
+    // The ankle keeps its bind position (0,-1,1), not the IK target (0,-0.5,1.2).
+    const XMVECTOR anklePos = world[2].r[3];
+    MMDLAB_CHECK(std::fabs(XMVectorGetX(anklePos) - 0.0f) < 1e-4f);
+    MMDLAB_CHECK(std::fabs(XMVectorGetY(anklePos) - (-1.0f)) < 1e-4f);
+    MMDLAB_CHECK(std::fabs(XMVectorGetZ(anklePos) - 1.0f) < 1e-4f);
+}
+
+MMDLAB_TEST(Animation.SkeletonPose, TwoBoneIkPoleIsStableUnderThighTwist)
+{
+    using namespace DirectX;
+
+    // The same leg chain as TwoBoneIkPlacesAnkleAtTarget: thigh -> knee -> ankle, plus a foot-IK
+    // control bone. The knee's bend direction (pole) must come from the thigh's bind rotation, so
+    // rolling (twisting) the thigh about its longitudinal axis does not flip the knee to the other
+    // side of the root -> target axis.
+    MmdLab::Skeleton skeleton;
+    const auto AddBone = [&](const char* name, float px, float py, float pz, float tx, float ty, float tz,
+        std::uint16_t parent)
+    {
+        MmdLab::Bone bone;
+        bone.name = name;
+        bone.position[0] = px; bone.position[1] = py; bone.position[2] = pz;
+        bone.tail[0] = tx; bone.tail[1] = ty; bone.tail[2] = tz;
+        bone.parentIndex = parent;
+        skeleton.bones.push_back(std::move(bone));
+    };
+    AddBone("thigh", 0, 0, 0, 0, -1, 0, MmdLab::kInvalidBoneIndex);
+    AddBone("knee", 0, -1, 0, 0, -1, 1, 0);
+    AddBone("ankle", 0, -1, 1, 0, -1, 2, 1);
+    AddBone("foot_ik", 0, 0, 0, 0, 0, 1, MmdLab::kInvalidBoneIndex);
+
+    skeleton.children.resize(4);
+    skeleton.children[0].push_back(1);
+    skeleton.children[1].push_back(2);
+
+    MmdLab::IkChain chain;
+    chain.ikBoneIndex = 3;
+    chain.targetBoneIndex = 2; // ankle
+    chain.links = { 1, 0 };    // knee, thigh (tip-to-root)
+    skeleton.ikChains.push_back(chain);
+
+    const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
+    const XMVECTOR target = XMVectorSet(0.0f, -0.5f, 1.2f, 0.0f);
+
+    const auto SolveKnee = [&](const float twistDegrees) -> XMVECTOR
+    {
+        MmdLab::BonePose motion;
+        motion.local.resize(4);
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            motion.local[i] = bind.localBind[i];
+        }
+        XMStoreFloat4x4(&motion.local[3], XMMatrixTranslationFromVector(target));
+
+        // Roll the thigh about the world-Y (its longitudinal) axis, which leaves the knee
+        // position but not the thigh's world X axis unchanged.
+        const XMMATRIX twist = XMMatrixRotationY(XMConvertToRadians(twistDegrees));
+        const XMMATRIX rolled = XMMatrixMultiply(XMLoadFloat4x4(&bind.localBind[0]), twist);
+        XMStoreFloat4x4(&motion.local[0], rolled);
+
+        std::vector<XMFLOAT4X4> palette;
+        std::vector<XMMATRIX> world;
+        MmdLab::EvaluateSkeletonPose(skeleton, bind, &motion, palette, world);
+        return world[1].r[3]; // knee position
+    };
+
+    const XMVECTOR kneeA = SolveKnee(0.0f);
+    const XMVECTOR kneeB = SolveKnee(90.0f);
+
+    MMDLAB_CHECK(std::fabs(XMVectorGetX(kneeA) - XMVectorGetX(kneeB)) < 1e-4f);
+    MMDLAB_CHECK(std::fabs(XMVectorGetY(kneeA) - XMVectorGetY(kneeB)) < 1e-4f);
+    MMDLAB_CHECK(std::fabs(XMVectorGetZ(kneeA) - XMVectorGetZ(kneeB)) < 1e-4f);
+}

@@ -37,6 +37,12 @@ public:
         return value;
     }
 
+    std::uint8_t ReadU8()
+    {
+        Check(1);
+        return data_[offset_++];
+    }
+
     float ReadF32()
     {
         const std::uint32_t bits = ReadU32();
@@ -51,6 +57,15 @@ public:
         std::memcpy(out, data_ + offset_, count);
         offset_ += count;
     }
+
+    // Advances the cursor without reading, used to skip fixed-length sections.
+    void Skip(const std::size_t count)
+    {
+        Check(count);
+        offset_ += count;
+    }
+
+    std::size_t Remaining() const { return size_ - offset_; }
 
 private:
     void Check(const std::size_t count) const
@@ -181,7 +196,57 @@ VmdMotion ParseVmdFile(const std::filesystem::path& path)
             [](const VmdBoneKey& a, const VmdBoneKey& b) { return a.frame < b.frame; });
     }
 
-    // Morph, camera, light, self-shadow, and IK sections follow in the file but are skipped.
+    // Skip the morph (23 bytes/key), camera (61), light (28), and self-shadow (9) sections; each
+    // is fixed length per keyframe. The show/IK section follows and is self-describing (an
+    // explicit per-keyframe IK-bone count plus per-bone names), so it is parsed model-
+    // independently. Older files may end before any trailing section, so each read is guarded.
+    if (reader.Remaining() >= 4)
+    {
+        const std::uint32_t morphCount = reader.ReadU32();
+        reader.Skip(static_cast<std::size_t>(morphCount) * 23);
+    }
+    if (reader.Remaining() >= 4)
+    {
+        const std::uint32_t cameraCount = reader.ReadU32();
+        reader.Skip(static_cast<std::size_t>(cameraCount) * 61);
+    }
+    if (reader.Remaining() >= 4)
+    {
+        const std::uint32_t lightCount = reader.ReadU32();
+        reader.Skip(static_cast<std::size_t>(lightCount) * 28);
+    }
+    if (reader.Remaining() >= 4)
+    {
+        const std::uint32_t shadowCount = reader.ReadU32();
+        reader.Skip(static_cast<std::size_t>(shadowCount) * 9);
+    }
+
+    if (reader.Remaining() >= 4)
+    {
+        const std::uint32_t showIkCount = reader.ReadU32();
+        motion.showIkKeyframes.reserve(showIkCount);
+        for (std::uint32_t i = 0; i < showIkCount; ++i)
+        {
+            VmdShowIkKeyframe keyframe;
+            keyframe.frame = reader.ReadU32();
+            keyframe.show = reader.ReadU8() != 0;
+            const std::uint32_t ikCount = reader.ReadU32();
+            keyframe.ikBones.reserve(ikCount);
+            for (std::uint32_t j = 0; j < ikCount; ++j)
+            {
+                std::uint8_t name[20];
+                reader.ReadBytes(name, sizeof(name));
+                VmdIkBoneState state;
+                state.ikBoneName = ShiftJisToUtf8(name, sizeof(name));
+                state.enabled = reader.ReadU8() != 0;
+                keyframe.ikBones.push_back(std::move(state));
+            }
+            motion.showIkKeyframes.push_back(std::move(keyframe));
+        }
+        std::sort(motion.showIkKeyframes.begin(), motion.showIkKeyframes.end(),
+            [](const VmdShowIkKeyframe& a, const VmdShowIkKeyframe& b) { return a.frame < b.frame; });
+    }
+
     return motion;
 }
 } // namespace MmdLab

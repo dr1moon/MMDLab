@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace MmdLab
 {
@@ -28,6 +29,11 @@ public:
     // Samples the motion at the current time into a BonePose for `skeleton`. Bones with a
     // matching track use the interpolated keyframes; the rest use their bind local transform.
     void SamplePose(const Skeleton& skeleton, const BindPose& bindPose, BonePose& outPose) const;
+
+    // Samples the show/IK track at the current time into `outEnabled`, parallel to
+    // `skeleton.ikChains` (true = solve the chain). With no show/IK keyframe every chain defaults
+    // to enabled; IK on/off is discrete, so the most recent keyframe is held.
+    void SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& outEnabled) const;
 
 private:
     [[nodiscard]] const VmdBoneTrack* FindTrack(const std::string& boneName) const;

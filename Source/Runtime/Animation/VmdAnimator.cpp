@@ -13,9 +13,43 @@ namespace
 {
 constexpr float kVmdFramesPerSecond = 30.0f;
 
+// Evaluates one MMD cubic-Bezier interpolation curve at linear time `t` (0..1). The curve maps the
+// normalized time axis (x) to the normalized value axis (y): the control points (x1, y1) and
+// (x2, y2), each in [0, 127], define a cubic Bezier from (0, 0) to (1, 1). Newton's method
+// inverts x(s) = t to recover the curve parameter s, then returns y(s).
+float EvaluateBezier(const std::uint8_t x1, const std::uint8_t y1, const std::uint8_t x2, const std::uint8_t y2, const float t)
+{
+    const float px1 = static_cast<float>(x1) / 127.0f;
+    const float py1 = static_cast<float>(y1) / 127.0f;
+    const float px2 = static_cast<float>(x2) / 127.0f;
+    const float py2 = static_cast<float>(y2) / 127.0f;
+
+    // x(s) = a s^3 + b s^2 + c s;  y(s) = d s^3 + e s^2 + f s.
+    const float a = 3.0f * px1 - 3.0f * px2 + 1.0f;
+    const float b = 3.0f * px2 - 6.0f * px1;
+    const float c = 3.0f * px1;
+    const float d = 3.0f * py1 - 3.0f * py2 + 1.0f;
+    const float e = 3.0f * py2 - 6.0f * py1;
+    const float f = 3.0f * py1;
+
+    float s = t;
+    for (int i = 0; i < 8; ++i)
+    {
+        const float x = ((a * s + b) * s + c) * s;
+        const float dx = (3.0f * a * s + 2.0f * b) * s + c;
+        if (std::fabs(dx) < 1e-6f)
+        {
+            break;
+        }
+        s = std::clamp(s - (x - t) / dx, 0.0f, 1.0f);
+    }
+
+    return ((d * s + e) * s + f) * s;
+}
+
 // Samples one track at `timeFrames` into a translation offset (w = 0) and a rotation quaternion
-// (x, y, z, w). Position is linearly interpolated and rotation is slerped between the two
-// surrounding keyframes; the Bezier interpolation bytes are not yet consumed.
+// (x, y, z, w). Position is per-component Bezier-interpolated and rotation is slerped between the
+// two surrounding keyframes using each component's interpolation curve.
 void SampleTrack(
     const VmdBoneTrack& track,
     const float timeFrames,
@@ -63,7 +97,22 @@ void SampleTrack(
     const float span = static_cast<float>(b.frame) - static_cast<float>(a.frame);
     const float t = span > 0.0f ? (timeFrames - static_cast<float>(a.frame)) / span : 0.0f;
 
-    outPosition = XMVectorLerp(loadPosition(a), loadPosition(b), t);
+    // The interpolation curve lives on the later keyframe (b) and eases the a -> b segment. The
+    // 64-byte block packs the four curves (X, Y, Z, R) in 16-byte slices with the control points
+    // at offsets 0, 4, 8, 12 (x1, y1, x2, y2); each component uses its own curve, so the factors
+    // differ and are applied per component.
+    const float tx = EvaluateBezier(b.interpolation[0], b.interpolation[4], b.interpolation[8], b.interpolation[12], t);
+    const float ty = EvaluateBezier(b.interpolation[16], b.interpolation[20], b.interpolation[24], b.interpolation[28], t);
+    const float tz = EvaluateBezier(b.interpolation[32], b.interpolation[36], b.interpolation[40], b.interpolation[44], t);
+    const float tr = EvaluateBezier(b.interpolation[48], b.interpolation[52], b.interpolation[56], b.interpolation[60], t);
+
+    const XMVECTOR positionA = loadPosition(a);
+    const XMVECTOR positionB = loadPosition(b);
+    outPosition = XMVectorSet(
+        XMVectorGetX(positionA) + (XMVectorGetX(positionB) - XMVectorGetX(positionA)) * tx,
+        XMVectorGetY(positionA) + (XMVectorGetY(positionB) - XMVectorGetY(positionA)) * ty,
+        XMVectorGetZ(positionA) + (XMVectorGetZ(positionB) - XMVectorGetZ(positionA)) * tz,
+        0.0f);
 
     XMVECTOR rotationA = loadRotation(a);
     XMVECTOR rotationB = loadRotation(b);
@@ -72,7 +121,7 @@ void SampleTrack(
     {
         rotationB = XMVectorNegate(rotationB);
     }
-    outRotation = XMQuaternionSlerp(rotationA, rotationB, t);
+    outRotation = XMQuaternionSlerp(rotationA, rotationB, tr);
 }
 } // namespace
 
@@ -175,5 +224,34 @@ const VmdBoneTrack* VmdAnimator::FindTrack(const std::string& boneName) const
 {
     const auto it = trackByBoneName_.find(boneName);
     return it == trackByBoneName_.end() ? nullptr : &motion_.boneTracks[it->second];
+}
+
+void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& outEnabled) const
+{
+    outEnabled.assign(skeleton.ikChains.size(), true);
+
+    // Hold the most recent show/IK keyframe at or before the current time (IK is discrete).
+    const auto upper = std::upper_bound(motion_.showIkKeyframes.begin(), motion_.showIkKeyframes.end(),
+        timeFrames_,
+        [](const float t, const VmdShowIkKeyframe& keyframe) { return t < static_cast<float>(keyframe.frame); });
+    if (upper == motion_.showIkKeyframes.begin())
+    {
+        return; // Before the first show/IK keyframe; every chain stays enabled.
+    }
+
+    const VmdShowIkKeyframe& active = *(upper - 1);
+    for (const VmdIkBoneState& state : active.ikBones)
+    {
+        for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
+        {
+            const std::uint16_t ikBone = skeleton.ikChains[i].ikBoneIndex;
+            if (ikBone != kInvalidBoneIndex && static_cast<std::size_t>(ikBone) < skeleton.bones.size()
+                && skeleton.bones[ikBone].name == state.ikBoneName)
+            {
+                outEnabled[i] = state.enabled;
+                break;
+            }
+        }
+    }
 }
 } // namespace MmdLab

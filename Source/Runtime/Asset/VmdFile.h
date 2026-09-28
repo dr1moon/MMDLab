@@ -26,12 +26,31 @@ struct VmdBoneTrack
     std::vector<VmdBoneKey> keys;
 };
 
-// A parsed VMD bone motion. VMD is a MikuMikuDance file-format identifier; the morph, camera,
-// light, self-shadow, and IK sections are skipped because no runtime consumer exists yet.
+// One IK bone's on/off state recorded by a show/IK keyframe, keyed by the IK bone's UTF-8 name.
+struct VmdIkBoneState
+{
+    std::string ikBoneName;
+    bool enabled = true;
+};
+
+// One show/IK (表示・IK) keyframe: the frame, the model display flag, and the on/off state of
+// every IK bone at that frame. IK is a discrete on/off, so sampling holds the most recent
+// keyframe rather than interpolating.
+struct VmdShowIkKeyframe
+{
+    std::uint32_t frame = 0;
+    bool show = true;                     // Model display flag (表示); parsed but not consumed.
+    std::vector<VmdIkBoneState> ikBones;  // IK on/off states, in file order.
+};
+
+// A parsed VMD motion: the model name, the bone tracks, and the show/IK keyframes. VMD is a
+// MikuMikuDance file-format identifier; the morph, camera, light, and self-shadow sections are
+// skipped because no runtime consumer exists yet.
 struct VmdMotion
 {
     std::string modelName;
     std::vector<VmdBoneTrack> boneTracks;
+    std::vector<VmdShowIkKeyframe> showIkKeyframes; // Sorted by frame.
 };
 
 // Parses the header and bone-motion section of a VMD 2.0 file. Bone and model names are
