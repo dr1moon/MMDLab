@@ -1,10 +1,12 @@
 #include "App/MmdViewer/World.h"
 
 #include "Runtime/Asset/ModelRegistry.h"
+#include "Runtime/Asset/VmdFile.h"
 #include "Runtime/Core/Log.h"
 #include "Runtime/Core/Utf8.h"
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <map>
@@ -213,5 +215,67 @@ std::span<const ModelInstance> World::SelectedInstances() const
         return {};
     }
     return levels_[selectedLevel_].instances;
+}
+
+void World::LoadMotionsFromDirectory(const std::filesystem::path& directory)
+{
+    if (!std::filesystem::is_directory(directory))
+    {
+        return;
+    }
+
+    std::vector<std::filesystem::path> paths;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(directory))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == L".vmd")
+        {
+            paths.push_back(entry.path());
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+
+    motions_.clear();
+    motions_.reserve(paths.size());
+    for (const std::filesystem::path& path : paths)
+    {
+        MotionEntry entry;
+        entry.name = WideToUtf8(path.stem().wstring());
+        entry.path = path;
+        motions_.push_back(std::move(entry));
+    }
+
+    LogInfo("App", std::format("Scanned {} motion(s) in {}", motions_.size(), WideToUtf8(directory.wstring())));
+}
+
+void World::SelectMotion(const std::uint32_t index)
+{
+    if (index >= motions_.size() || index == selectedMotion_)
+    {
+        return;
+    }
+
+    try
+    {
+        VmdMotion motion = ParseVmdFile(motions_[index].path);
+        const std::size_t trackCount = motion.boneTracks.size();
+        animator_.SetMotion(std::move(motion));
+        selectedMotion_ = index;
+        LogInfo("App", std::format("Loaded motion '{}' ({} bone tracks)", motions_[index].name, trackCount));
+    }
+    catch (const std::exception& exception)
+    {
+        LogError("Asset", std::format("Failed to load motion '{}': {}",
+            motions_[index].path.string(), exception.what()));
+    }
+}
+
+void World::SetMotionPlaying(const bool playing)
+{
+    animator_.SetPlaying(playing);
+}
+
+void World::SeekMotion(const float frames)
+{
+    animator_.SeekFrames(frames);
 }
 } // namespace MmdLab

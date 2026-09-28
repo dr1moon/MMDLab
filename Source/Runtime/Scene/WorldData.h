@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -26,5 +28,18 @@ struct Level
     std::vector<ModelInstance> instances;
     float boundsMin[3] = { 0.0f, 0.0f, 0.0f }; // Union bounds of the level's models, for camera framing.
     float boundsMax[3] = { 0.0f, 0.0f, 0.0f };
+};
+
+// Invalid motion index: "no motion scanned or selected yet", mirroring kInvalidBoneIndex's role
+// for "no bone". The Motion combo and frame projection use it before the first selection.
+inline constexpr std::uint32_t kInvalidMotionIndex = 0xFFFFFFFFu;
+
+// One VMD motion file discovered under the Motions directory and selectable for playback. The
+// GameThread uses the path to parse the motion on selection; only the name is projected into the
+// frame so the UI can list motions. VMD is a MikuMikuDance file-format identifier.
+struct MotionEntry
+{
+    std::string name;            // UTF-8 display name (the file stem).
+    std::filesystem::path path;  // Absolute path used to parse the motion on selection.
 };
 } // namespace MmdLab

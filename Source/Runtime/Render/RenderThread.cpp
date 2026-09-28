@@ -30,6 +30,11 @@ uint32_t RenderThread::Run()
         frame.renderToRhi.levels = renderFrame.levels;
         frame.renderToRhi.selectedLevel = renderFrame.selectedLevel;
         frame.renderToRhi.levelGeneration = renderFrame.levelGeneration;
+        frame.renderToRhi.motions = renderFrame.motions;
+        frame.renderToRhi.selectedMotion = renderFrame.selectedMotion;
+        frame.renderToRhi.motionPlaying = renderFrame.motionPlaying;
+        frame.renderToRhi.motionTimeFrames = renderFrame.motionTimeFrames;
+        frame.renderToRhi.motionDurationFrames = renderFrame.motionDurationFrames;
         frame.renderToRhi.camera = renderFrame.camera;
         frame.renderToRhi.bonePalette = renderFrame.bonePalette;
         frame.renderToRhi.bonePaletteOffsets = renderFrame.bonePaletteOffsets;

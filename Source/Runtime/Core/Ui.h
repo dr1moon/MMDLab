@@ -11,16 +11,25 @@ inline constexpr std::size_t kWin32InputQueueCapacity = 256;
 inline constexpr std::size_t kUiRequestQueueCapacity = 8;
 inline constexpr std::size_t kCameraInputQueueCapacity = 8;
 
-enum class UiCommand : std::uint32_t { SelectLevel, SetInstanceVisible };
+enum class UiCommand : std::uint32_t
+{
+    SelectLevel,
+    SetInstanceVisible,
+    SelectMotion,
+    SetMotionPlaying,
+    SeekMotion,
+};
 
-// RhiThread -> GameThread: a user edit from the imgui panel. SelectLevel changes the level
-// combo; SetInstanceVisible toggles one model of the selected level. The GameThread applies
-// it to its authoritative world state.
+// RhiThread -> GameThread: a user edit from the imgui panel. SelectLevel changes the level combo;
+// SetInstanceVisible toggles one model of the selected level; SelectMotion / SetMotionPlaying /
+// SeekMotion drive VMD playback. The GameThread applies the command to its authoritative world state.
 struct UiRequest
 {
     UiCommand command = UiCommand::SelectLevel;
-    std::uint32_t index = 0;   // Level index (SelectLevel) or instance index (SetInstanceVisible).
+    std::uint32_t index = 0;   // Level index (SelectLevel), instance index (SetInstanceVisible), or motion index (SelectMotion).
     bool visible = true;       // SetInstanceVisible: the instance's new visibility state.
+    bool playing = true;       // SetMotionPlaying: whether the motion advances.
+    float seekFrames = 0.0f;   // SeekMotion: target playback time in 30 fps frames.
 };
 
 // RhiThread -> GameThread: orbit/pan/zoom deltas the user produced this frame (mouse

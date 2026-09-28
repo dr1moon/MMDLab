@@ -189,6 +189,60 @@ uint32_t RhiThread::Run()
                 ImGui::EndTabItem();
             }
 
+            if (ImGui::BeginTabItem("Motion"))
+            {
+                if (batch.motions.empty())
+                {
+                    ImGui::Text("No motions found. Place .vmd files in Project/Motions.");
+                }
+                else
+                {
+                    std::vector<const char*> motionItems;
+                    motionItems.reserve(batch.motions.size());
+                    for (const MotionEntry& motion : batch.motions)
+                    {
+                        motionItems.push_back(motion.name.c_str());
+                    }
+
+                    int selected = batch.selectedMotion < batch.motions.size()
+                        ? static_cast<int>(batch.selectedMotion)
+                        : 0;
+                    if (ImGui::Combo("Motion", &selected, motionItems.data(), static_cast<int>(motionItems.size())))
+                    {
+                        if (selected >= 0 && selected < static_cast<int>(motionItems.size()))
+                        {
+                            uiQueue_->TryPush(UiRequest{ .command = UiCommand::SelectMotion, .index = static_cast<std::uint32_t>(selected) });
+                        }
+                    }
+
+                    ImGui::Separator();
+
+                    const bool playing = batch.motionPlaying;
+                    if (ImGui::Button(playing ? "Pause" : "Play"))
+                    {
+                        uiQueue_->TryPush(UiRequest{ .command = UiCommand::SetMotionPlaying, .playing = !playing });
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Restart"))
+                    {
+                        uiQueue_->TryPush(UiRequest{ .command = UiCommand::SeekMotion, .seekFrames = 0.0f });
+                    }
+
+                    // VMD runs at a fixed 30 fps, so a frame count also reads as time / 30 seconds.
+                    ImGui::Text("Time %.1f / %.1f frames (%.2f / %.2f s)",
+                        batch.motionTimeFrames, batch.motionDurationFrames,
+                        batch.motionTimeFrames / 30.0f, batch.motionDurationFrames / 30.0f);
+
+                    float time = batch.motionTimeFrames;
+                    const float maxFrames = batch.motionDurationFrames > 0.0f ? batch.motionDurationFrames : 1.0f;
+                    if (ImGui::SliderFloat("Timeline", &time, 0.0f, maxFrames, "%.1f"))
+                    {
+                        uiQueue_->TryPush(UiRequest{ .command = UiCommand::SeekMotion, .seekFrames = time });
+                    }
+                }
+                ImGui::EndTabItem();
+            }
+
             if (ImGui::BeginTabItem("Inspect"))
             {
                 bool anyVisible = false;

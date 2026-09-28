@@ -22,8 +22,15 @@ public:
     [[nodiscard]] bool HasMotion() const { return !motion_.boneTracks.empty(); }
     [[nodiscard]] float TimeFrames() const { return timeFrames_; }
     [[nodiscard]] float DurationFrames() const { return durationFrames_; }
+    [[nodiscard]] bool IsPlaying() const { return playing_; }
+    void SetPlaying(bool playing) { playing_ = playing; }
+
+    // Sets playback time directly, clamped to [0, duration], so the UI timeline can seek and
+    // restart (seek to 0) without affecting the play/pause state.
+    void SeekFrames(float frames);
 
     // Advances playback by `deltaSeconds` at the VMD 30 fps rate, looping at the duration.
+    // Does nothing while paused (see SetPlaying).
     void Advance(float deltaSeconds);
 
     // Samples the motion at the current time into a BonePose for `skeleton`. Bones with a
@@ -42,6 +49,7 @@ private:
     std::unordered_map<std::string, std::size_t> trackByBoneName_;
     float timeFrames_ = 0.0f;
     float durationFrames_ = 0.0f;
+    bool playing_ = true;
     // One-shot: log the VMD tracks that match no skeleton bone on the first sample.
     mutable bool unmatchedLogged_ = false;
 };

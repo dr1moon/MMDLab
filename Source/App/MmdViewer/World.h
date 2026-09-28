@@ -41,6 +41,21 @@ public:
     [[nodiscard]] Camera& GetCamera() { return camera_; }
     [[nodiscard]] VmdAnimator& Animator() { return animator_; }
 
+    // Scans every *.vmd file under the directory (sorted by path) into the selectable motion
+    // list. Motions are parsed lazily on selection, not at startup.
+    void LoadMotionsFromDirectory(const std::filesystem::path& directory);
+
+    [[nodiscard]] const std::vector<MotionEntry>& Motions() const { return motions_; }
+    [[nodiscard]] std::uint32_t SelectedMotion() const { return selectedMotion_; }
+
+    // Parses the motion at `index` and installs it on the animator, resetting playback to the
+    // first frame. Ignores an out-of-range or already-selected index; a parse failure is logged
+    // and the previous motion stays active.
+    void SelectMotion(std::uint32_t index);
+
+    void SetMotionPlaying(bool playing);
+    void SeekMotion(float frames);
+
     // Selects a level. A loaded level is published immediately (generation bump + camera frame);
     // an unloaded one is still loading in the background, and its completion publishes it.
     // Ignored when the index is out of range or already selected.
@@ -86,6 +101,8 @@ private:
     std::vector<PendingLevel> pending_;
     Camera camera_;
     VmdAnimator animator_;
+    std::vector<MotionEntry> motions_;
+    std::uint32_t selectedMotion_ = kInvalidMotionIndex;
     ModelRegistry* registry_ = nullptr;
     Channel<LoadRequest, kLoadRequestCapacity>* loadRequests_ = nullptr;
     std::size_t selectedLevel_ = 0;

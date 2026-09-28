@@ -2,7 +2,6 @@
 #include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Asset/ModelRegistry.h"
-#include "Runtime/Asset/VmdFile.h"
 #include "App/MmdViewer/WindowsApplication.h"
 #include "Runtime/Core/Channel.h"
 #include "Runtime/Core/CpuBudget.h"
@@ -111,35 +110,16 @@ int wmain(const int argc, wchar_t* argv[])
             MmdLab::LogError("Asset", std::format("No .pmx models found in {}", scanDirectory.string()));
         }
 
-        // Load the first VMD motion in Project/Motions so the loaded models can be posed once they
-        // finish loading. Motions are optional; the viewer falls back to the bind pose when none
-        // is found or a file fails to parse.
+        // Scan every VMD motion in Project/Motions and auto-select the first so the loaded models
+        // are posed once they finish loading. Motions are optional; with none the viewer stays in
+        // the bind pose. The Motion tab switches and scrubs playback.
         const std::filesystem::path projectDirectory = FindProjectDirectory();
         if (!projectDirectory.empty())
         {
-            const std::filesystem::path motionsDirectory = projectDirectory / L"Motions";
-            if (std::filesystem::is_directory(motionsDirectory))
+            world.LoadMotionsFromDirectory(projectDirectory / L"Motions");
+            if (!world.Motions().empty())
             {
-                for (const auto& entry : std::filesystem::recursive_directory_iterator(motionsDirectory))
-                {
-                    if (entry.is_regular_file() && entry.path().extension() == L".vmd")
-                    {
-                        try
-                        {
-                            MmdLab::VmdMotion motion = MmdLab::ParseVmdFile(entry.path());
-                            const std::size_t trackCount = motion.boneTracks.size();
-                            world.Animator().SetMotion(std::move(motion));
-                            MmdLab::LogInfo("App", std::format("Loaded motion '{}' ({} bone tracks)",
-                                MmdLab::WideToUtf8(entry.path().filename().wstring()), trackCount));
-                        }
-                        catch (const std::exception& exception)
-                        {
-                            MmdLab::LogError("Asset", std::format("Failed to load motion '{}': {}",
-                                entry.path().string(), exception.what()));
-                        }
-                        break;
-                    }
-                }
+                world.SelectMotion(0);
             }
         }
 
@@ -198,6 +178,15 @@ int wmain(const int argc, wchar_t* argv[])
                     case MmdLab::UiCommand::SetInstanceVisible:
                         world.SetInstanceVisible(request->index, request->visible);
                         break;
+                    case MmdLab::UiCommand::SelectMotion:
+                        world.SelectMotion(request->index);
+                        break;
+                    case MmdLab::UiCommand::SetMotionPlaying:
+                        world.SetMotionPlaying(request->playing);
+                        break;
+                    case MmdLab::UiCommand::SeekMotion:
+                        world.SeekMotion(request->seekFrames);
+                        break;
                 }
             }
             while (const auto input = cameraQueue.TryPop())
@@ -230,6 +219,11 @@ int wmain(const int argc, wchar_t* argv[])
             renderFrame.levels = world.Levels();
             renderFrame.selectedLevel = static_cast<std::uint32_t>(world.SelectedLevel());
             renderFrame.levelGeneration = world.LevelGeneration();
+            renderFrame.motions = world.Motions();
+            renderFrame.selectedMotion = world.SelectedMotion();
+            renderFrame.motionPlaying = world.Animator().IsPlaying();
+            renderFrame.motionTimeFrames = world.Animator().TimeFrames();
+            renderFrame.motionDurationFrames = world.Animator().DurationFrames();
             renderFrame.camera = world.GetCamera();
 
             // Evaluate each model's skinning palette and concatenate them in model-index order so

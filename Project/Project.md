@@ -2,7 +2,7 @@
 
 A project holds the MikuMikuDance assets the editor loads. `Models/` holds one subfolder per
 PMX model (its `.pmx` plus the `textures/` it references); `Motions/` holds VMD motion files
-(consumed by a later milestone). PMX and VMD are MikuMikuDance file-format identifiers.
+(the viewer's Motion tab lists and plays them). PMX and VMD are MikuMikuDance file-format identifiers.
 
 ## Layout
 

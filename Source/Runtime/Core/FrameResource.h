@@ -34,6 +34,11 @@ struct RenderFrame
     std::span<const Level> levels;            // All levels (owned by the world).
     std::uint32_t selectedLevel = 0;          // Index the UI combo shows.
     std::uint32_t levelGeneration = 0;        // Bumps on every level switch.
+    std::span<const MotionEntry> motions;     // Motion files available for playback (owned by the world).
+    std::uint32_t selectedMotion = kInvalidMotionIndex; // Index the Motion combo shows.
+    bool motionPlaying = true;                // Whether playback advances this frame.
+    float motionTimeFrames = 0.0f;            // Current playback time, in 30 fps frames.
+    float motionDurationFrames = 0.0f;        // Motion length, in 30 fps frames.
     Camera camera;                            // World camera snapshot (owned by the world).
     // Skinning palettes, concatenated in model-index order and sliced by `bonePaletteOffsets`
     // (size modelCount + 1). Owned by the FrameResource; the renderer reads per-model ranges.
@@ -62,6 +67,11 @@ struct RenderWorkBatch
     std::span<const Level> levels;
     std::uint32_t selectedLevel = 0;
     std::uint32_t levelGeneration = 0;
+    std::span<const MotionEntry> motions;
+    std::uint32_t selectedMotion = kInvalidMotionIndex;
+    bool motionPlaying = true;
+    float motionTimeFrames = 0.0f;
+    float motionDurationFrames = 0.0f;
     Camera camera;
     std::span<const DirectX::XMFLOAT4X4> bonePalette;
     std::span<const std::uint32_t> bonePaletteOffsets;

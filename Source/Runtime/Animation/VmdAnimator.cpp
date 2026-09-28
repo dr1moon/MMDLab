@@ -144,7 +144,7 @@ void VmdAnimator::SetMotion(VmdMotion motion)
 
 void VmdAnimator::Advance(const float deltaSeconds)
 {
-    if (!HasMotion())
+    if (!playing_ || !HasMotion())
     {
         return;
     }
@@ -157,6 +157,11 @@ void VmdAnimator::Advance(const float deltaSeconds)
             timeFrames_ += durationFrames_;
         }
     }
+}
+
+void VmdAnimator::SeekFrames(const float frames)
+{
+    timeFrames_ = std::clamp(frames, 0.0f, durationFrames_);
 }
 
 void VmdAnimator::SamplePose(
