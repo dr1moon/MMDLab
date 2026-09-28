@@ -59,6 +59,10 @@ StructuredBuffer<float4x4> Bones : register(t3);
 // `refBoneOffset` root constant.
 StructuredBuffer<uint> RefBones : register(t4);
 
+// Morph deltas (model-space position offset per vertex), bound per model (t5). Indexed by the
+// vertex id and added to the position before skinning; zero for models without vertex morphs.
+StructuredBuffer<float3> MorphDeltas : register(t5);
+
 // Per-submesh skin-reference-bone slice offset, set as a root constant before each draw.
 cbuffer RefBoneConstants : register(b3)
 {
@@ -76,6 +80,7 @@ struct VSInput
     // vertex format also prevents any interpolation.
     uint4 blendIndices : BLENDINDICES;
     float4 blendWeights : BLENDWEIGHT;
+    uint vertexId : SV_VertexID;
 };
 
 struct VSOutput
@@ -99,7 +104,10 @@ VSOutput VSMain(VSInput input)
         input.blendWeights.z * Bones[RefBones[refBoneOffset + input.blendIndices.z]] +
         input.blendWeights.w * Bones[RefBones[refBoneOffset + input.blendIndices.w]];
 
-    float4 skinnedPosition = mul(skinMatrix, float4(input.position.xyz, 1.0));
+    // Morph the model-space position before skinning: the delta is a model-space offset, so it
+    // must land inside the skin transform, not after it.
+    float3 morphedPosition = input.position.xyz + MorphDeltas[input.vertexId];
+    float4 skinnedPosition = mul(skinMatrix, float4(morphedPosition, 1.0));
     output.position = mul(viewProjection, mul(world, skinnedPosition));
 
     float3 skinnedNormal = mul((float3x3)skinMatrix, input.normal.xyz);

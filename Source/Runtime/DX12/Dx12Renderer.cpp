@@ -245,6 +245,63 @@ void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& mode
         srvGpu.ptr += srvDescriptorSize_;
     }
 
+    // Morph deltas: double-buffered default-heap structured buffers (float3 per vertex), each with
+    // an SRV plus a persistent upload staging buffer, mirroring the bone matrices. A model without
+    // vertex morphs still gets the buffer, zero-filled by the per-frame upload, so the vertex
+    // shader always reads a valid resource.
+    const std::uint32_t morphVertexCount = std::max<std::uint32_t>(
+        1u, static_cast<std::uint32_t>(model.mesh.vertices.size()));
+    D3D12_RESOURCE_DESC morphDescription{};
+    morphDescription.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    morphDescription.Width = static_cast<UINT64>(morphVertexCount) * 3 * sizeof(float);
+    morphDescription.Height = 1;
+    morphDescription.DepthOrArraySize = 1;
+    morphDescription.MipLevels = 1;
+    morphDescription.SampleDesc.Count = 1;
+    morphDescription.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for (std::uint32_t i = 0; i < kFrameCount; ++i)
+    {
+        D3D12_HEAP_PROPERTIES morphDefaultHeap{};
+        morphDefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &morphDefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &morphDescription,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&gpuModel.morphDeltaBuffers[i]))))
+        {
+            throw std::runtime_error("Failed to create the morph-delta buffer.");
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC morphSrv{};
+        morphSrv.Format = DXGI_FORMAT_UNKNOWN;
+        morphSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        morphSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        morphSrv.Buffer.FirstElement = 0;
+        morphSrv.Buffer.NumElements = morphVertexCount;
+        morphSrv.Buffer.StructureByteStride = 3 * sizeof(float);
+        device_.Get()->CreateShaderResourceView(gpuModel.morphDeltaBuffers[i].Get(), &morphSrv, srvCpu);
+        gpuModel.morphDeltaSrv[i] = srvGpu;
+        srvCpu.ptr += srvDescriptorSize_;
+        srvGpu.ptr += srvDescriptorSize_;
+
+        D3D12_HEAP_PROPERTIES morphUploadHeap{};
+        morphUploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &morphUploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &morphDescription,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&gpuModel.morphDeltaStaging[i]))))
+        {
+            throw std::runtime_error("Failed to create the morph-delta staging buffer.");
+        }
+        gpuModel.morphDeltaStaging[i]->Map(0, nullptr, &gpuModel.morphDeltaStagingMapped[i]);
+    }
+
     residentModels_.emplace(modelIndex, std::move(gpuModel));
 }
 
@@ -534,7 +591,7 @@ void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> 
     // One three-descriptor (base/toon/sphere) SRV bundle per material.
     D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
     heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3 + kFrameCount + 1;
+    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3 + 2 * kFrameCount + 1;
     heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heapDescription.NodeMask = 0;
 
@@ -889,6 +946,8 @@ std::uint64_t Dx12Renderer::Render(
     const std::span<const Model> models,
     const std::span<const DirectX::XMFLOAT4X4> bonePalette,
     const std::span<const std::uint32_t> bonePaletteOffsets,
+    const std::span<const float> morphDeltas,
+    const std::span<const std::uint32_t> morphDeltaOffsets,
     const Camera& camera,
     ImDrawData* const uiDrawData)
 {
@@ -996,10 +1055,43 @@ std::uint64_t Dx12Renderer::Render(
                 }
             }
 
+            // Upload this model's morph deltas (zero when no active vertex morphs), then bind the
+            // SRV the vertex shader reads before skinning.
+            if (modelIndex + 1 < morphDeltaOffsets.size())
+            {
+                const std::uint32_t deltaFirst = morphDeltaOffsets[modelIndex];
+                const std::uint32_t deltaCount = morphDeltaOffsets[modelIndex + 1] - deltaFirst;
+                if (deltaCount > 0 && deltaFirst + deltaCount <= morphDeltas.size())
+                {
+                    std::memcpy(
+                        gpuModel.morphDeltaStagingMapped[frameIndex],
+                        morphDeltas.data() + deltaFirst,
+                        static_cast<std::size_t>(deltaCount) * sizeof(float));
+
+                    D3D12_RESOURCE_BARRIER morphBarrier{};
+                    morphBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    morphBarrier.Transition.pResource = gpuModel.morphDeltaBuffers[frameIndex].Get();
+                    morphBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                    commandList_->ResourceBarrier(1, &morphBarrier);
+
+                    commandList_->CopyBufferRegion(
+                        gpuModel.morphDeltaBuffers[frameIndex].Get(), 0,
+                        gpuModel.morphDeltaStaging[frameIndex].Get(), 0,
+                        static_cast<std::uint64_t>(deltaCount) * sizeof(float));
+
+                    morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                    morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    commandList_->ResourceBarrier(1, &morphBarrier);
+                }
+            }
+
             ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
             commandList_->SetDescriptorHeaps(1, descriptorHeaps);
             commandList_->SetGraphicsRootDescriptorTable(4, gpuModel.boneMatricesSrv[frameIndex]);
             commandList_->SetGraphicsRootDescriptorTable(5, gpuModel.refBonesSrv);
+            commandList_->SetGraphicsRootDescriptorTable(7, gpuModel.morphDeltaSrv[frameIndex]);
 
             D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningView };
             commandList_->IASetVertexBuffers(0, 2, vertexViews);

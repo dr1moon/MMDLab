@@ -38,6 +38,8 @@ uint32_t RenderThread::Run()
         frame.renderToRhi.camera = renderFrame.camera;
         frame.renderToRhi.bonePalette = renderFrame.bonePalette;
         frame.renderToRhi.bonePaletteOffsets = renderFrame.bonePaletteOffsets;
+        frame.renderToRhi.morphDeltas = renderFrame.morphDeltas;
+        frame.renderToRhi.morphDeltaOffsets = renderFrame.morphDeltaOffsets;
 
         output_->Push(*index);
     }

@@ -110,4 +110,4 @@ project "MmdTests"
         "Source/Tests/**.hpp",
         "Source/Tests/**.cpp",
     }
-    links { "MmdCore", "MmdCookLib", "d3d12", "dxgi", "dxguid" }
+    links { "MmdCore", "MmdCookLib", "d3d12", "dxgi", "dxguid", "d3dcompiler" }

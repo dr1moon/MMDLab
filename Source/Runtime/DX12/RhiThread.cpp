@@ -375,7 +375,8 @@ uint32_t RhiThread::Run()
             try
             {
                 frame.gpuFenceValue = renderer_->Render(
-                    batch.instances, batch.models, batch.bonePalette, batch.bonePaletteOffsets, batch.camera, drawData);
+                    batch.instances, batch.models, batch.bonePalette, batch.bonePaletteOffsets,
+                    batch.morphDeltas, batch.morphDeltaOffsets, batch.camera, drawData);
             }
             catch (const std::exception& exception)
             {

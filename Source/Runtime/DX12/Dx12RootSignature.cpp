@@ -8,7 +8,7 @@ namespace MmdLab
 {
 Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
 {
-    D3D12_ROOT_PARAMETER rootParameters[7]{};
+    D3D12_ROOT_PARAMETER rootParameters[8]{};
 
     // b0 (vertex + pixel): the camera constant buffer (view-projection, light, view dir).
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -77,6 +77,19 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     rootParameters[6].Constants.Num32BitValues = 1;
     rootParameters[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    // t5 (vertex): the per-vertex morph delta buffer (float3 per vertex), bound per model.
+    D3D12_DESCRIPTOR_RANGE morphRange{};
+    morphRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    morphRange.NumDescriptors = 1;
+    morphRange.BaseShaderRegister = 5;
+    morphRange.RegisterSpace = 0;
+    morphRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[7].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[7].DescriptorTable.pDescriptorRanges = &morphRange;
+    rootParameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     // s0 (pixel): the texture sampler.
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -94,7 +107,7 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC description{};
-    description.NumParameters = 7;
+    description.NumParameters = 8;
     description.pParameters = rootParameters;
     description.NumStaticSamplers = 1;
     description.pStaticSamplers = &sampler;

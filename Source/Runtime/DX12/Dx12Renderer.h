@@ -59,6 +59,8 @@ public:
         std::span<const Model> models,
         std::span<const DirectX::XMFLOAT4X4> bonePalette,
         std::span<const std::uint32_t> bonePaletteOffsets,
+        std::span<const float> morphDeltas,
+        std::span<const std::uint32_t> morphDeltaOffsets,
         const Camera& camera,
         ImDrawData* uiDrawData);
 
@@ -97,6 +99,13 @@ private:
         // Skin-reference-bone table (static): local u8 -> global u16, widened to u32 on the GPU.
         Microsoft::WRL::ComPtr<ID3D12Resource> refBonesBuffer;
         D3D12_GPU_DESCRIPTOR_HANDLE refBonesSrv{};
+        // Morph deltas (model-space position offsets per vertex), double-buffered default-heap
+        // structured buffers updated per frame, mirroring the bone matrices. Zero-filled for
+        // models without vertex morphs.
+        Microsoft::WRL::ComPtr<ID3D12Resource> morphDeltaBuffers[kFrameCount];
+        D3D12_GPU_DESCRIPTOR_HANDLE morphDeltaSrv[kFrameCount]{};
+        Microsoft::WRL::ComPtr<ID3D12Resource> morphDeltaStaging[kFrameCount];
+        void* morphDeltaStagingMapped[kFrameCount] = { nullptr, nullptr };
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> textures;
         std::vector<DXGI_FORMAT> textureFormats; // Parallel to `textures`.

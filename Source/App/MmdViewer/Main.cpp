@@ -1,4 +1,5 @@
 #include "App/MmdViewer/World.h"
+#include "Runtime/Animation/MorphPose.h"
 #include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Asset/ModelRegistry.h"
@@ -233,8 +234,13 @@ int wmain(const int argc, wchar_t* argv[])
             const auto& models = modelRegistry.Models();
             frame.bonePaletteSnapshot.clear();
             frame.bonePaletteOffsetSnapshot.assign(models.size() + 1, 0);
+            frame.morphDeltaSnapshot.clear();
+            frame.morphDeltaOffsetSnapshot.assign(models.size() + 1, 0);
             std::vector<DirectX::XMFLOAT4X4> palette;
             std::vector<DirectX::XMMATRIX> worldScratch;
+            std::vector<float> morphWeights;
+            std::vector<float> resolvedWeights;
+            std::vector<float> morphDelta;
             MmdLab::BonePose motionPose;
             std::vector<bool> ikEnabled;
             for (std::size_t m = 0; m < models.size(); ++m)
@@ -244,18 +250,33 @@ int wmain(const int argc, wchar_t* argv[])
                 {
                     world.Animator().SamplePose(model.skeleton, model.bindPose, motionPose);
                     world.Animator().SampleIkEnabled(model.skeleton, ikEnabled);
+                    // Sample and resolve morphs; bone morphs fold into the pose before skeleton
+                    // evaluation so their offsets reach the skinning palette.
+                    world.Animator().SampleMorphWeights(model.morphs, morphWeights);
+                    MmdLab::ResolveMorphWeights(model.morphs, morphWeights, resolvedWeights);
+                    MmdLab::ApplyBoneMorphs(model.morphs, resolvedWeights, motionPose);
                     MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, &motionPose, palette, worldScratch, &ikEnabled);
                 }
                 else
                 {
                     MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, nullptr, palette, worldScratch);
+                    resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
                 }
+
+                // Accumulate active vertex morphs into a dense per-vertex position delta (all
+                // zeros with no motion), so the renderer uploads and applies it in the shader.
+                morphDelta.assign(model.mesh.vertices.size() * 3, 0.0f);
+                MmdLab::AccumulateVertexMorphDeltas(model.morphs, resolvedWeights, morphDelta);
+                frame.morphDeltaSnapshot.insert(frame.morphDeltaSnapshot.end(), morphDelta.begin(), morphDelta.end());
+                frame.morphDeltaOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.morphDeltaSnapshot.size());
 
                 frame.bonePaletteSnapshot.insert(frame.bonePaletteSnapshot.end(), palette.begin(), palette.end());
                 frame.bonePaletteOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.bonePaletteSnapshot.size());
             }
             renderFrame.bonePalette = frame.bonePaletteSnapshot;
             renderFrame.bonePaletteOffsets = frame.bonePaletteOffsetSnapshot;
+            renderFrame.morphDeltas = frame.morphDeltaSnapshot;
+            renderFrame.morphDeltaOffsets = frame.morphDeltaOffsetSnapshot;
 
             gameToRender.Push(index);
         }

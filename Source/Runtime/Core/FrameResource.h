@@ -44,6 +44,11 @@ struct RenderFrame
     // (size modelCount + 1). Owned by the FrameResource; the renderer reads per-model ranges.
     std::span<const DirectX::XMFLOAT4X4> bonePalette;
     std::span<const std::uint32_t> bonePaletteOffsets;
+    // Dense per-vertex morph position deltas (3 floats per vertex), concatenated in model-index
+    // order and sliced by `morphDeltaOffsets` (size modelCount + 1, in floats). Owned by the
+    // FrameResource; zero for models with no active vertex morphs.
+    std::span<const float> morphDeltas;
+    std::span<const std::uint32_t> morphDeltaOffsets;
 };
 
 // One sub-mesh draw command: a range of the index buffer plus the material that shades it and
@@ -75,6 +80,8 @@ struct RenderWorkBatch
     Camera camera;
     std::span<const DirectX::XMFLOAT4X4> bonePalette;
     std::span<const std::uint32_t> bonePaletteOffsets;
+    std::span<const float> morphDeltas;
+    std::span<const std::uint32_t> morphDeltaOffsets;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the
@@ -95,6 +102,9 @@ struct FrameResource
     // start offsets, so the frame carries an immutable snapshot of the GameThread's evaluation.
     std::vector<DirectX::XMFLOAT4X4> bonePaletteSnapshot;
     std::vector<std::uint32_t> bonePaletteOffsetSnapshot;
+    // Frame-local morph deltas (concatenated, 3 floats per vertex) plus per-model start offsets.
+    std::vector<float> morphDeltaSnapshot;
+    std::vector<std::uint32_t> morphDeltaOffsetSnapshot;
     // Fence value RhiThread records when it submits this frame's GPU work. It tells
     // RhiThread when the frame can be retired and the resource returned to the pool.
     uint64_t gpuFenceValue = 0;
