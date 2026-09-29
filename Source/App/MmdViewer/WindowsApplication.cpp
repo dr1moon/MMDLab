@@ -1,5 +1,7 @@
 #include "App/MmdViewer/WindowsApplication.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <stdexcept>
 
 namespace
@@ -25,6 +27,7 @@ WindowsApplication::~WindowsApplication()
 
 void WindowsApplication::Initialize(const HINSTANCE instanceHandle, const int showCommand)
 {
+    ZoneScopedN("WindowsApplication::Initialize");
     instanceHandle_ = instanceHandle;
 
     WNDCLASSEXW windowClassDescription{};

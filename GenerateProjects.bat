@@ -7,12 +7,19 @@ set "VsWherePath=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.e
 set "SolutionPath=%ProjectRoot%MMDLab.slnx"
 set "BuildSolution=0"
 set "Configuration=Debug"
+set "TracyOption="
 
 :ParseArguments
 if "%~1"=="" goto ValidateTools
 
 if /I "%~1"=="--build" (
     set "BuildSolution=1"
+    shift
+    goto ParseArguments
+)
+
+if /I "%~1"=="--no-tracy" (
+    set "TracyOption=--no-tracy"
     shift
     goto ParseArguments
 )
@@ -30,7 +37,7 @@ if /I "%~1"=="Release" (
 )
 
 echo Unknown argument: %~1
-echo Usage: %~nx0 [--build] [Debug^|Release]
+echo Usage: %~nx0 [--build] [--no-tracy] [Debug^|Release]
 exit /b 1
 
 :ValidateTools
@@ -54,7 +61,7 @@ if not defined MsBuildPath (
 
 echo Using MSBuild: "%MsBuildPath%"
 echo Generating Visual Studio 2026 projects...
-call "%PremakePath%" --file="%ProjectRoot%premake5.lua" vs2026
+call "%PremakePath%" --file="%ProjectRoot%premake5.lua" %TracyOption% vs2026
 if errorlevel 1 exit /b %errorlevel%
 
 if "%BuildSolution%"=="0" (

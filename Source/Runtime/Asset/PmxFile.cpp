@@ -1,5 +1,7 @@
 #include "Runtime/Asset/PmxFile.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -155,6 +157,7 @@ std::uint32_t ReadUIndex(Reader& reader, const std::uint8_t size)
 
 PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
 {
+    ZoneScopedN("ParsePmxStaticMesh");
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file)
     {

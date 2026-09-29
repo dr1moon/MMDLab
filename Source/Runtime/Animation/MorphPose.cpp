@@ -1,5 +1,7 @@
 #include "Runtime/Animation/MorphPose.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <DirectXMath.h>
 
 #include <cstdint>
@@ -12,6 +14,7 @@ void ResolveMorphWeights(
     const std::vector<float>& directWeights,
     std::vector<float>& outResolved)
 {
+    ZoneScopedN("ResolveMorphWeights");
     outResolved.assign(set.morphs.size(), 0.0f);
 
     // Group morphs are expanded with an explicit stack (rather than recursion) so a malformed
@@ -71,6 +74,7 @@ void ApplyBoneMorphs(
     const std::vector<float>& resolvedWeights,
     BonePose& pose)
 {
+    ZoneScopedN("ApplyBoneMorphs");
     using namespace DirectX;
 
     const std::size_t count = std::min(resolvedWeights.size(), set.morphs.size());
@@ -118,6 +122,7 @@ void AccumulateVertexMorphDeltas(
     const std::vector<float>& resolvedWeights,
     std::span<float> outDeltas)
 {
+    ZoneScopedN("AccumulateVertexMorphDeltas");
     const std::size_t count = std::min(resolvedWeights.size(), set.morphs.size());
     for (std::size_t m = 0; m < count; ++m)
     {

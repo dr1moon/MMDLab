@@ -31,6 +31,20 @@ Build\Bin\Debug\x64\MmdTests.exe FrameResourcePool
 
 `MmdTests` is a lightweight native test runner for Core, asset, and runtime tests. Passing assertions avoid failure-record allocations; failures report their expression and source location.
 
+## Profiling
+
+CPU time is instrumented with [Tracy](https://github.com/wolfpld/tracy); the client is vendored under
+`Source/ThirdParty/tracy`. Instrumentation is enabled by default (`TRACY_ENABLE` is defined for Debug
+and Release); build with `--no-tracy` to compile it out:
+
+```text
+GenerateProjects.bat --build Release           # Tracy on (default)
+GenerateProjects.bat --build Release --no-tracy
+```
+
+The viewer accepts `--frames N` to run a bounded number of frames, and a headless capture daemon
+records the trace. See `Docs/Tracy.md` for the full automated capture workflow.
+
 ## Continuous Integration
 
 GitHub Actions runs the Windows Debug build and `MmdTests` on pushes, pull requests, and manual dispatch. The workflow is defined in `.github/workflows/build-and-test.yml`.

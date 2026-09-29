@@ -5,6 +5,8 @@
 #include "Runtime/Core/Thread.h"
 #include "Runtime/Core/Utf8.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <chrono>
 #include <exception>
 #include <format>
@@ -27,6 +29,7 @@ uint32_t IoWorker::Run()
         std::visit(Overloaded{
             [&](const ModelParseRequest& r)
             {
+                ZoneScopedN("IoWorker::ParseModel");
                 const auto start = std::chrono::steady_clock::now();
                 ModelParseResult result;
                 result.levelIndex = r.levelIndex;
@@ -58,6 +61,7 @@ uint32_t IoWorker::Run()
             },
             [&](const TextureDecodeRequest& r)
             {
+                ZoneScopedN("IoWorker::DecodeTexture");
                 const auto start = std::chrono::steady_clock::now();
                 TextureDecodeResult result;
                 result.levelIndex = r.levelIndex;

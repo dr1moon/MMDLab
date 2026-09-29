@@ -3,6 +3,8 @@
 #include "Runtime/Core/Log.h"
 #include "Runtime/Core/Utf8.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <format>
 #include <stdexcept>
 
@@ -97,7 +99,12 @@ uint32_t Thread::RunInternal()
     // Register this worker's role name before Init so logs emitted during initialization (for
     // example the RhiThread's adapter and renderer logs) read "[RhiThread]" rather than a raw OS
     // thread id.
-    RegisterThreadName(WideToUtf8(name_));
+    const std::string threadName = WideToUtf8(name_);
+    RegisterThreadName(threadName);
+    // Give Tracy the same role name (it also sets the OS thread description) so the profiler
+    // timeline labels this thread by role rather than a raw OS thread id. A no-op when Tracy is
+    // not compiled in.
+    tracy::SetThreadName(threadName.c_str());
 
     if (!runnable_->Init())
     {

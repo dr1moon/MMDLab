@@ -8,3 +8,6 @@ Project/
 # Local editor state and ad-hoc captures.
 imgui.ini
 Snipaste_*.png
+
+# Prebuilt Tracy profiler/capture tools (copied in from D:\tracy; rebuilt from source as needed).
+Tools/Tracy/

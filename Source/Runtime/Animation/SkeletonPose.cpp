@@ -1,5 +1,7 @@
 #include "Runtime/Animation/SkeletonPose.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <string_view>
@@ -527,6 +529,7 @@ void EvaluateSkeletonPose(
     std::vector<DirectX::XMMATRIX>& scratchWorld,
     const std::vector<bool>* ikEnabled)
 {
+    ZoneScopedN("EvaluateSkeletonPose");
     using namespace DirectX;
 
     const std::size_t count = skeleton.bones.size();

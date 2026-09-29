@@ -1,6 +1,8 @@
 #include "Runtime/Animation/VmdAnimator.h"
 #include "Runtime/Core/Log.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <DirectXMath.h>
 
 #include <algorithm>
@@ -180,6 +182,7 @@ void VmdAnimator::SamplePose(
     const BindPose& bindPose,
     BonePose& outPose) const
 {
+    ZoneScopedN("VmdAnimator::SamplePose");
     using namespace DirectX;
 
     // One-shot diagnostic: log every VMD track whose bone name matches no bone in the character's
@@ -273,6 +276,7 @@ void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& o
 
 void VmdAnimator::SampleMorphWeights(const MorphSet& set, std::vector<float>& outWeights) const
 {
+    ZoneScopedN("VmdAnimator::SampleMorphWeights");
     outWeights.assign(set.morphs.size(), 0.0f);
     for (std::size_t i = 0; i < set.morphs.size(); ++i)
     {

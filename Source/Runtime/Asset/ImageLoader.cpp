@@ -7,6 +7,8 @@
 #define STBI_WINDOWS_UTF8
 #include "ThirdParty/stb/stb_image.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <windows.h>
 
 #include <objbase.h>
@@ -117,6 +119,7 @@ bool TryDecodeWic(const std::filesystem::path& path, Image& image)
 
 Image DecodeImage(const std::filesystem::path& path)
 {
+    ZoneScopedN("DecodeImage");
     Image image;
     if (TryDecodeWic(path, image))
     {

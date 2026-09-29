@@ -6,6 +6,8 @@
 #include "Runtime/Scene/WorldData.h"
 #include "Runtime/Core/Log.h"
 
+#include "tracy/Tracy.hpp"
+
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -53,6 +55,7 @@ RhiThread::~RhiThread()
 
 bool RhiThread::Init()
 {
+    ZoneScopedN("RhiThread::Init");
     try
     {
         // Load RenderDoc before creating the device so it hooks device creation.
@@ -121,6 +124,7 @@ uint32_t RhiThread::Run()
 
     while (const auto index = input_->Pop())
     {
+        ZoneScopedN("RhiThread::Frame");
         FrameResource& frame = pool_->Get(*index);
         const RenderWorkBatch& batch = frame.renderToRhi;
 

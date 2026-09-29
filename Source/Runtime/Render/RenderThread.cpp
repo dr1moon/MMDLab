@@ -2,6 +2,8 @@
 
 #include "Runtime/Asset/MeshAsset.h"
 
+#include "tracy/Tracy.hpp"
+
 namespace MmdLab
 {
 RenderThread::RenderThread(
@@ -18,6 +20,7 @@ uint32_t RenderThread::Run()
 {
     while (const auto index = input_->Pop())
     {
+        ZoneScopedN("RenderThread::Compile");
         FrameResource& frame = pool_->Get(*index);
 
         // Compile: for a static level the draw list is the set of instances in the selected

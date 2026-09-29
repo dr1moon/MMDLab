@@ -7,6 +7,8 @@
 #include "Runtime/Scene/WorldData.h"
 #include "Runtime/Core/Log.h"
 
+#include "tracy/Tracy.hpp"
+
 #include "imgui_impl_dx12.h"
 
 #include <windows.h>
@@ -951,6 +953,7 @@ std::uint64_t Dx12Renderer::Render(
     const Camera& camera,
     ImDrawData* const uiDrawData)
 {
+    ZoneScopedN("Dx12Renderer::Render");
     const std::uint32_t frameIndex = swapChain_.CurrentBackBufferIndex();
 
     WaitForPreviousFrame(frameIndex);
