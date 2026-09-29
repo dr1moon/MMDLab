@@ -154,6 +154,7 @@ void VmdAnimator::SetMotion(VmdMotion motion)
     }
     timeFrames_ = 0.0f;
     ++poseGeneration_;
+    ++motionGeneration_;
 }
 
 void VmdAnimator::Advance(const float deltaSeconds)

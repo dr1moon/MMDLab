@@ -31,6 +31,9 @@ public:
     // a seek; the loop wrap is not a jump), so physics knows to reset instead of simulating it.
     [[nodiscard]] std::uint32_t PoseGeneration() const { return poseGeneration_; }
 
+    // Bumped only when a new motion is installed, so a pose jump can be told apart from a seek.
+    [[nodiscard]] std::uint32_t MotionGeneration() const { return motionGeneration_; }
+
     // Sets playback time directly, clamped to [0, duration], so the UI timeline can seek and
     // restart (seek to 0) without affecting the play/pause state.
     void SeekFrames(float frames);
@@ -63,6 +66,7 @@ private:
     float durationFrames_ = 0.0f;
     bool playing_ = true;
     std::uint32_t poseGeneration_ = 0;
+    std::uint32_t motionGeneration_ = 0;
     // One-shot: log the VMD tracks that match no skeleton bone on the first sample.
     mutable bool unmatchedLogged_ = false;
 };

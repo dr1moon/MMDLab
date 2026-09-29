@@ -241,3 +241,34 @@ MMDLAB_TEST(Animation.VmdAnimator, InterpolatesPositionWithBezierCurve)
     MMDLAB_CHECK(std::fabs(pose.local[0].m[3][1] - 10.0f) < 1e-3f);
     MMDLAB_CHECK(std::fabs(pose.local[0].m[3][2] - 15.0f) < 1e-3f);
 }
+
+MMDLAB_TEST(Animation.VmdAnimator, GenerationsSeparateMotionChangesFromSeeks)
+{
+    // Physics resets on a new motion but may simulate a short seek, and must not see the loop
+    // wrap as either.
+    MmdLab::VmdMotion motion;
+    MmdLab::VmdBoneTrack track;
+    track.boneName = "bone";
+    track.keys.push_back(MmdLab::VmdBoneKey{});
+    MmdLab::VmdBoneKey last{};
+    last.frame = 30;
+    track.keys.push_back(last);
+    motion.boneTracks.push_back(track);
+
+    MmdLab::VmdAnimator animator;
+    animator.SetMotion(motion);
+    const std::uint32_t motionGeneration = animator.MotionGeneration();
+    const std::uint32_t poseGeneration = animator.PoseGeneration();
+
+    animator.SeekFrames(10.0f);
+    MMDLAB_CHECK_EQUAL(motionGeneration, animator.MotionGeneration());
+    MMDLAB_CHECK(animator.PoseGeneration() != poseGeneration);
+
+    const std::uint32_t afterSeek = animator.PoseGeneration();
+    animator.Advance(1.0f); // 30 frames: wraps past the end.
+    MMDLAB_CHECK_EQUAL(afterSeek, animator.PoseGeneration());
+    MMDLAB_CHECK_EQUAL(motionGeneration, animator.MotionGeneration());
+
+    animator.SetMotion(motion);
+    MMDLAB_CHECK(animator.MotionGeneration() != motionGeneration);
+}

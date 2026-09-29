@@ -1,6 +1,7 @@
 #include "App/MmdViewer/World.h"
 #include "Runtime/Animation/MorphPose.h"
 #include "Runtime/Animation/SkeletonPose.h"
+#include "Runtime/Physics/PhysicsStepPolicy.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Asset/ModelRegistry.h"
 #include "App/MmdViewer/WindowsApplication.h"
@@ -137,6 +138,8 @@ int wmain(const int argc, wchar_t* argv[])
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
         std::uint32_t lastPoseGeneration = 0;
+        std::uint32_t lastMotionGeneration = 0;
+        float lastMotionFrames = 0.0f;
         if (frameLimit > 0)
         {
             MmdLab::LogInfo("App", std::format("Running {} frame(s), then exiting", frameLimit));
@@ -227,9 +230,16 @@ int wmain(const int argc, wchar_t* argv[])
             std::vector<float> morphDelta;
             MmdLab::BonePose motionPose;
             std::vector<bool> ikEnabled;
-            // A pose jump (new motion, seek) resets physics instead of simulating the jump.
-            const bool poseJumped = world.Animator().PoseGeneration() != lastPoseGeneration;
-            lastPoseGeneration = world.Animator().PoseGeneration();
+            // Physics freezes while paused, follows a short timeline scrub, and resets on a new
+            // motion or a long jump instead of simulating it.
+            const MmdLab::VmdAnimator& animator = world.Animator();
+            const bool motionChanged = animator.MotionGeneration() != lastMotionGeneration;
+            const bool seeked = !motionChanged && animator.PoseGeneration() != lastPoseGeneration;
+            const MmdLab::PhysicsStep physicsStep = MmdLab::ResolvePhysicsStep(motionChanged, seeked,
+                !animator.HasMotion() || animator.IsPlaying(), lastMotionFrames, animator.TimeFrames(), deltaTime);
+            lastMotionGeneration = animator.MotionGeneration();
+            lastPoseGeneration = animator.PoseGeneration();
+            lastMotionFrames = animator.TimeFrames();
             for (std::size_t m = 0; m < models.size(); ++m)
             {
                 const MmdLab::Model& model = models[m];
@@ -255,11 +265,11 @@ int wmain(const int argc, wchar_t* argv[])
                 // colliders, steps, and overrides the simulated bones (hair, cloth, accessories).
                 if (MmdLab::PhysicsScene* physics = world.PhysicsFor(m))
                 {
-                    if (poseJumped)
+                    if (physicsStep.reset)
                     {
                         physics->Reset(worldScratch);
                     }
-                    physics->Simulate(deltaTime, worldScratch);
+                    physics->Simulate(physicsStep.deltaSeconds, worldScratch);
                 }
                 // PMX PhysicsAfterDeform bones (and their IK and grants) follow the simulation.
                 MmdLab::EvaluateBoneWorldAfterPhysics(model.skeleton, model.bindPose, localScratch, worldScratch,
