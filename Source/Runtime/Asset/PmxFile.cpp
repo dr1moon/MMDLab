@@ -521,6 +521,96 @@ PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path)
         mesh.morphs.push_back(std::move(morph));
     }
 
+    // Display frames: the editor's bone/morph panel grouping, read and discarded.
+    const std::uint32_t displayFrameCount = reader.ReadU32();
+    for (std::uint32_t f = 0; f < displayFrameCount; ++f)
+    {
+        (void)ReadString(reader, utf8); // Frame name.
+        (void)ReadString(reader, utf8); // Frame name EN.
+        reader.Skip(1);                 // Special-frame flag.
+        const std::uint32_t elementCount = reader.ReadU32();
+        for (std::uint32_t e = 0; e < elementCount; ++e)
+        {
+            const std::uint8_t target = reader.ReadU8();
+            ReadIndex(reader, target == 0 ? boneIndexSize : morphIndexSize);
+        }
+    }
+
+    // Rigid bodies.
+    const auto readVector3 = [&reader](float (&out)[3])
+    {
+        for (float& value : out) { value = reader.ReadF32(); }
+    };
+    const std::uint32_t bodyCount = reader.ReadU32();
+    mesh.physics.bodies.reserve(bodyCount);
+    for (std::uint32_t b = 0; b < bodyCount; ++b)
+    {
+        BodySetup body;
+        body.name = ReadString(reader, utf8);
+        (void)ReadString(reader, utf8); // Name EN.
+        body.boneIndex = ReadBoneIndex(reader, boneIndexSize);
+        body.group = reader.ReadU8();
+        body.collisionMask = reader.ReadU16();
+        const std::uint8_t shape = reader.ReadU8();
+        if (shape > 2)
+        {
+            throw std::runtime_error("Unknown PMX rigid body shape.");
+        }
+        body.shape = static_cast<BodyShape>(shape);
+        readVector3(body.size);
+        readVector3(body.position);
+        readVector3(body.rotation);
+        body.mass = reader.ReadF32();
+        body.linearDamping = reader.ReadF32();
+        body.angularDamping = reader.ReadF32();
+        body.restitution = reader.ReadF32();
+        body.friction = reader.ReadF32();
+        const std::uint8_t mode = reader.ReadU8();
+        if (mode > 2)
+        {
+            throw std::runtime_error("Unknown PMX rigid body physics mode.");
+        }
+        body.mode = static_cast<BodyMode>(mode);
+        if (body.group > 15)
+        {
+            throw std::runtime_error("PMX rigid body collision group is out of range.");
+        }
+        if (body.boneIndex != kInvalidBoneIndex && body.boneIndex >= mesh.bones.size())
+        {
+            throw std::runtime_error("PMX rigid body references an out-of-range bone.");
+        }
+        mesh.physics.bodies.push_back(std::move(body));
+    }
+
+    // Joints. Every PMX joint type is simulated as a six-degree-of-freedom spring, as MMD does.
+    const std::uint32_t jointCount = reader.ReadU32();
+    mesh.physics.constraints.reserve(jointCount);
+    for (std::uint32_t j = 0; j < jointCount; ++j)
+    {
+        ConstraintSetup joint;
+        joint.name = ReadString(reader, utf8);
+        (void)ReadString(reader, utf8); // Name EN.
+        (void)reader.ReadU8();          // Joint type.
+        const std::int32_t bodyA = ReadIndex(reader, rigidBodyIndexSize);
+        const std::int32_t bodyB = ReadIndex(reader, rigidBodyIndexSize);
+        readVector3(joint.position);
+        readVector3(joint.rotation);
+        readVector3(joint.linearLowerLimit);
+        readVector3(joint.linearUpperLimit);
+        readVector3(joint.angularLowerLimit);
+        readVector3(joint.angularUpperLimit);
+        readVector3(joint.linearStiffness);
+        readVector3(joint.angularStiffness);
+        if (bodyA < 0 || bodyB < 0 || static_cast<std::uint32_t>(bodyA) >= bodyCount
+            || static_cast<std::uint32_t>(bodyB) >= bodyCount)
+        {
+            throw std::runtime_error("PMX joint references an out-of-range rigid body.");
+        }
+        joint.bodyA = static_cast<std::uint32_t>(bodyA);
+        joint.bodyB = static_cast<std::uint32_t>(bodyB);
+        mesh.physics.constraints.push_back(std::move(joint));
+    }
+
     // Validate morph references (vertex, bone, and group morphs only).
     for (const Morph& morph : mesh.morphs)
     {
@@ -824,6 +914,7 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         mesh.morphs.push_back(std::move(morph));
     }
 
+    mesh.physics = pmx.physics;
     return mesh;
 }
 } // namespace MmdLab

@@ -107,6 +107,8 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         model.morphs.indexByName.emplace(model.morphs.morphs[i].name, i);
     }
 
+    model.physics = meshData.physics;
+
     // Derive the inverse-bind matrices once so per-frame skeleton evaluation only needs to walk
     // the hierarchy and multiply; this is a pure function of the skeleton, so it is safe on the
     // I/O thread.

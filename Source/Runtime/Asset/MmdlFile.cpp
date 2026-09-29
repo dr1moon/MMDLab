@@ -151,6 +151,7 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
     const MmdlChunkDescriptor* skinningChunk = nullptr;
     const MmdlChunkDescriptor* refBoneChunk = nullptr;
     const MmdlChunkDescriptor* morphChunk = nullptr;
+    const MmdlChunkDescriptor* physicsChunk = nullptr;
 
     for (const MmdlChunkDescriptor& descriptor : descriptors)
     {
@@ -196,6 +197,9 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             break;
         case MmdlChunkType::Morph:
             morphChunk = &descriptor;
+            break;
+        case MmdlChunkType::Physics:
+            physicsChunk = &descriptor;
             break;
         case MmdlChunkType::MeshMetadata:
         {
@@ -382,6 +386,78 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             }
 
             mesh.morphs.push_back(std::move(morph));
+        }
+    }
+
+    // Rigid bodies and joints (names inline, like the skeleton).
+    if (physicsChunk != nullptr)
+    {
+        Reader reader(data.data() + physicsChunk->offset, static_cast<std::size_t>(physicsChunk->size));
+        const auto readString = [&reader]()
+        {
+            const std::uint32_t length = reader.ReadU32();
+            std::string text(length, '\0');
+            reader.ReadBytes(reinterpret_cast<std::uint8_t*>(text.data()), length);
+            return text;
+        };
+        const auto readVector3 = [&reader](float (&out)[3])
+        {
+            for (float& value : out) { value = reader.ReadF32(); }
+        };
+
+        const std::uint32_t bodyCount = reader.ReadU32();
+        mesh.physics.bodies.reserve(bodyCount);
+        for (std::uint32_t i = 0; i < bodyCount; ++i)
+        {
+            BodySetup body;
+            body.name = readString();
+            body.boneIndex = reader.ReadU16();
+            body.group = reader.ReadU8();
+            body.collisionMask = reader.ReadU16();
+            const std::uint8_t shape = reader.ReadU8();
+            const std::uint8_t mode = reader.ReadU8();
+            if (shape > 2 || mode > 2 || body.group > 15)
+            {
+                throw std::runtime_error(".mmdl rigid body has an invalid shape, mode, or group.");
+            }
+            body.shape = static_cast<BodyShape>(shape);
+            body.mode = static_cast<BodyMode>(mode);
+            readVector3(body.size);
+            readVector3(body.position);
+            readVector3(body.rotation);
+            body.mass = reader.ReadF32();
+            body.linearDamping = reader.ReadF32();
+            body.angularDamping = reader.ReadF32();
+            body.restitution = reader.ReadF32();
+            body.friction = reader.ReadF32();
+            if (body.boneIndex != kInvalidBoneIndex && body.boneIndex >= mesh.bones.size())
+            {
+                throw std::runtime_error(".mmdl rigid body references an out-of-range bone.");
+            }
+            mesh.physics.bodies.push_back(std::move(body));
+        }
+
+        const std::uint32_t constraintCount = reader.ReadU32();
+        mesh.physics.constraints.reserve(constraintCount);
+        for (std::uint32_t i = 0; i < constraintCount; ++i)
+        {
+            ConstraintSetup constraint;
+            constraint.name = readString();
+            constraint.bodyA = reader.ReadU32();
+            constraint.bodyB = reader.ReadU32();
+            readVector3(constraint.position);
+            readVector3(constraint.rotation);
+            readVector3(constraint.linearLowerLimit);
+            readVector3(constraint.linearUpperLimit);
+            readVector3(constraint.angularLowerLimit);
+            readVector3(constraint.angularUpperLimit);
+            readVector3(constraint.linearStiffness);
+            readVector3(constraint.angularStiffness);
+            if (constraint.bodyA >= bodyCount || constraint.bodyB >= bodyCount)
+            {
+                throw std::runtime_error(".mmdl joint references an out-of-range rigid body.");
+            }
+            mesh.physics.constraints.push_back(std::move(constraint));
         }
     }
 

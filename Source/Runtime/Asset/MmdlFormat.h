@@ -2,6 +2,7 @@
 
 #include "Runtime/Asset/Material.h"
 #include "Runtime/Asset/Morph.h"
+#include "Runtime/Asset/PhysicsAsset.h"
 #include "Runtime/Asset/Skeleton.h"
 #include "Runtime/Core/FrameResource.h"
 
@@ -16,7 +17,7 @@ namespace MmdLab
 // no pointers, raw C++ containers, or compiler-dependent enums.
 
 inline constexpr std::uint32_t MmdlMagic = 0x4C444D4D; // "MMDL".
-inline constexpr std::uint32_t MmdlVersion = 9;
+inline constexpr std::uint32_t MmdlVersion = 10;
 
 enum class MmdlChunkType : std::uint32_t
 {
@@ -30,6 +31,7 @@ enum class MmdlChunkType : std::uint32_t
     SkinningVertexBuffer = 8,
     SubMeshBoneTable = 9,
     Morph = 10,
+    Physics = 11,
 };
 
 // Fixed file header at offset 0.
@@ -153,6 +155,9 @@ struct MmdlMeshData
     // global PMX offsets out to every per-submesh copy); bone and group morphs reference global
     // bone/morph indices.
     std::vector<Morph> morphs;
+
+    // Cooked rigid bodies and joints; bone and body indices are global, as in the PMX.
+    PhysicsAsset physics;
 
     // Model-space bounds of the vertex positions. The source populates them (the PMX converter
     // computes them; the .mmdl reader reads the cooked values) so downstream consumers never

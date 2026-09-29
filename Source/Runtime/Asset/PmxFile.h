@@ -2,6 +2,7 @@
 
 #include "Runtime/Asset/MmdlFormat.h"
 #include "Runtime/Asset/Morph.h"
+#include "Runtime/Asset/PhysicsAsset.h"
 #include "Runtime/Asset/Skeleton.h"
 
 #include <cstdint>
@@ -96,9 +97,9 @@ struct PmxBone
     std::vector<PmxIkLink> ikLinks;
 };
 
-// The parsed geometry, skeleton, and morphs of a PMX model. The physics section is not parsed
-// yet; morphs are parsed (vertex, bone, and group stored; UV, material, flip, and impulse
-// skipped). Vertex-morph offsets reference global PMX vertex indices here; ConvertPmxToMmdl fans
+// The parsed geometry, skeleton, morphs, and physics of a PMX model. Morphs are parsed (vertex,
+// bone, and group stored; UV, material, flip, and impulse skipped); display frames are skipped;
+// rigid bodies and joints are stored. Vertex-morph offsets reference global PMX vertex indices here; ConvertPmxToMmdl fans
 // them out to mesh-local indices.
 struct PmxStaticMesh
 {
@@ -109,11 +110,12 @@ struct PmxStaticMesh
     std::vector<PmxMaterial> materials;
     std::vector<PmxBone> bones;
     std::vector<Morph> morphs;
+    PhysicsAsset physics;
 };
 
-// Parses the geometry, skeleton, and morphs of a PMX 2.0/2.1 file: header, model info, vertices
-// (with skinning), indices, textures, materials, bones, and morphs. Skips physics. Throws
-// std::runtime_error on malformed or unsupported input.
+// Parses a PMX 2.0/2.1 file: header, model info, vertices (with skinning), indices, textures,
+// materials, bones, morphs, display frames (skipped), rigid bodies, and joints. Soft bodies
+// (PMX 2.1) are not read. Throws std::runtime_error on malformed or unsupported input.
 [[nodiscard]] PmxStaticMesh ParsePmxStaticMesh(const std::filesystem::path& path);
 
 // Converts a parsed PMX static mesh into the runtime .mmdl mesh data representation, applying

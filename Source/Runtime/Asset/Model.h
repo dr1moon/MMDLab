@@ -4,6 +4,7 @@
 #include "Runtime/Asset/ImageLoader.h"
 #include "Runtime/Asset/MeshAsset.h"
 #include "Runtime/Asset/Morph.h"
+#include "Runtime/Asset/PhysicsAsset.h"
 #include "Runtime/Asset/Skeleton.h"
 
 #include <string>
@@ -23,5 +24,6 @@ struct Model
     std::vector<SkinningVertex> skinning; // Parallel to mesh.vertices.
     std::vector<Image> textures;
     MorphSet morphs; // Morph offsets (vertex offsets mesh-local); name-indexed for VMD lookup.
+    PhysicsAsset physics; // Rigid bodies and joints; each model instance simulates its own copy.
 };
 } // namespace MmdLab

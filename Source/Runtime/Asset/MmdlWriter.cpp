@@ -217,8 +217,49 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         }
     }
 
+    ByteWriter physicsChunk;
+    const auto writeVector3 = [&physicsChunk](const float (&values)[3])
+    {
+        for (const float value : values) { physicsChunk.F32(value); }
+    };
+    physicsChunk.U32(static_cast<std::uint32_t>(mesh.physics.bodies.size()));
+    for (const BodySetup& body : mesh.physics.bodies)
+    {
+        physicsChunk.U32(static_cast<std::uint32_t>(body.name.size()));
+        physicsChunk.Bytes(body.name.data(), body.name.size());
+        physicsChunk.U16(body.boneIndex);
+        physicsChunk.U8(body.group);
+        physicsChunk.U16(body.collisionMask);
+        physicsChunk.U8(static_cast<std::uint8_t>(body.shape));
+        physicsChunk.U8(static_cast<std::uint8_t>(body.mode));
+        writeVector3(body.size);
+        writeVector3(body.position);
+        writeVector3(body.rotation);
+        physicsChunk.F32(body.mass);
+        physicsChunk.F32(body.linearDamping);
+        physicsChunk.F32(body.angularDamping);
+        physicsChunk.F32(body.restitution);
+        physicsChunk.F32(body.friction);
+    }
+    physicsChunk.U32(static_cast<std::uint32_t>(mesh.physics.constraints.size()));
+    for (const ConstraintSetup& constraint : mesh.physics.constraints)
+    {
+        physicsChunk.U32(static_cast<std::uint32_t>(constraint.name.size()));
+        physicsChunk.Bytes(constraint.name.data(), constraint.name.size());
+        physicsChunk.U32(constraint.bodyA);
+        physicsChunk.U32(constraint.bodyB);
+        writeVector3(constraint.position);
+        writeVector3(constraint.rotation);
+        writeVector3(constraint.linearLowerLimit);
+        writeVector3(constraint.linearUpperLimit);
+        writeVector3(constraint.angularLowerLimit);
+        writeVector3(constraint.angularUpperLimit);
+        writeVector3(constraint.linearStiffness);
+        writeVector3(constraint.angularStiffness);
+    }
+
     // Assemble the file: header, chunk table, then the chunks.
-    const std::uint32_t chunkCount = 10;
+    const std::uint32_t chunkCount = 11;
     const std::uint64_t chunkTableOffset = sizeof(MmdlHeader);
 
     // Serialize the metadata chunk.
@@ -237,7 +278,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         metadataBytes.F32(value);
     }
 
-    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable, &morphChunk };
+    const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable, &morphChunk, &physicsChunk };
     const std::uint32_t chunkTypes[] = {
         static_cast<std::uint32_t>(MmdlChunkType::StringTable),
         static_cast<std::uint32_t>(MmdlChunkType::MeshMetadata),
@@ -249,6 +290,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         static_cast<std::uint32_t>(MmdlChunkType::SkinningVertexBuffer),
         static_cast<std::uint32_t>(MmdlChunkType::SubMeshBoneTable),
         static_cast<std::uint32_t>(MmdlChunkType::Morph),
+        static_cast<std::uint32_t>(MmdlChunkType::Physics),
     };
 
     std::uint64_t dataOffset = chunkTableOffset + static_cast<std::uint64_t>(chunkCount) * sizeof(MmdlChunkDescriptor);

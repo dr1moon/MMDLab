@@ -211,3 +211,91 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
         MMDLAB_CHECK_EQUAL(expected.boundsMax[axis], actual.boundsMax[axis]);
     }
 }
+
+MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesPhysics)
+{
+    MmdLab::MmdlMeshData expected = MakeTestMesh();
+    MmdLab::BodySetup collider;
+    collider.name = "thigh";
+    collider.boneIndex = 0;
+    collider.group = 1;
+    collider.collisionMask = 0x82F0;
+    collider.shape = MmdLab::BodyShape::Capsule;
+    collider.mode = MmdLab::BodyMode::FollowBone;
+    collider.size[0] = 0.8f; collider.size[1] = 2.5f;
+    collider.position[1] = 0.5f;
+    collider.rotation[2] = 0.25f;
+    MmdLab::BodySetup cloth = collider;
+    cloth.name = "skirt";
+    cloth.boneIndex = 1;
+    cloth.group = 7;
+    cloth.collisionMask = 0xFF7F;
+    cloth.shape = MmdLab::BodyShape::Box;
+    cloth.mode = MmdLab::BodyMode::PhysicsWithBonePosition;
+    cloth.mass = 0.5f;
+    cloth.linearDamping = 0.9f;
+    cloth.angularDamping = 0.99f;
+    cloth.restitution = 0.1f;
+    cloth.friction = 0.5f;
+    expected.physics.bodies = { collider, cloth };
+
+    MmdLab::ConstraintSetup joint;
+    joint.name = "thigh-skirt";
+    joint.bodyA = 0;
+    joint.bodyB = 1;
+    joint.position[1] = 1.0f;
+    joint.rotation[0] = 0.1f;
+    joint.angularLowerLimit[0] = -0.5f;
+    joint.angularUpperLimit[0] = 0.5f;
+    joint.linearStiffness[2] = 10.0f;
+    joint.angularStiffness[1] = 20.0f;
+    expected.physics.constraints = { joint };
+
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "mmdl_physics_roundtrip.mmdl";
+    MmdLab::WriteMmdl(path, expected);
+    const MmdLab::MmdlMeshData actual = MmdLab::ReadMmdl(path);
+    std::filesystem::remove(path);
+
+    MMDLAB_CHECK_EQUAL(expected.physics.bodies.size(), actual.physics.bodies.size());
+    MMDLAB_CHECK_EQUAL(expected.physics.constraints.size(), actual.physics.constraints.size());
+    for (std::size_t i = 0; i < expected.physics.bodies.size() && i < actual.physics.bodies.size(); ++i)
+    {
+        const MmdLab::BodySetup& a = expected.physics.bodies[i];
+        const MmdLab::BodySetup& b = actual.physics.bodies[i];
+        MMDLAB_CHECK(a.name == b.name);
+        MMDLAB_CHECK_EQUAL(a.boneIndex, b.boneIndex);
+        MMDLAB_CHECK_EQUAL(a.group, b.group);
+        MMDLAB_CHECK_EQUAL(a.collisionMask, b.collisionMask);
+        MMDLAB_CHECK(a.shape == b.shape);
+        MMDLAB_CHECK(a.mode == b.mode);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            MMDLAB_CHECK_EQUAL(a.size[axis], b.size[axis]);
+            MMDLAB_CHECK_EQUAL(a.position[axis], b.position[axis]);
+            MMDLAB_CHECK_EQUAL(a.rotation[axis], b.rotation[axis]);
+        }
+        MMDLAB_CHECK_EQUAL(a.mass, b.mass);
+        MMDLAB_CHECK_EQUAL(a.linearDamping, b.linearDamping);
+        MMDLAB_CHECK_EQUAL(a.angularDamping, b.angularDamping);
+        MMDLAB_CHECK_EQUAL(a.restitution, b.restitution);
+        MMDLAB_CHECK_EQUAL(a.friction, b.friction);
+    }
+    if (!actual.physics.constraints.empty())
+    {
+        const MmdLab::ConstraintSetup& b = actual.physics.constraints[0];
+        MMDLAB_CHECK(b.name == joint.name);
+        MMDLAB_CHECK_EQUAL(joint.bodyA, b.bodyA);
+        MMDLAB_CHECK_EQUAL(joint.bodyB, b.bodyB);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            MMDLAB_CHECK_EQUAL(joint.position[axis], b.position[axis]);
+            MMDLAB_CHECK_EQUAL(joint.rotation[axis], b.rotation[axis]);
+            MMDLAB_CHECK_EQUAL(joint.linearLowerLimit[axis], b.linearLowerLimit[axis]);
+            MMDLAB_CHECK_EQUAL(joint.linearUpperLimit[axis], b.linearUpperLimit[axis]);
+            MMDLAB_CHECK_EQUAL(joint.angularLowerLimit[axis], b.angularLowerLimit[axis]);
+            MMDLAB_CHECK_EQUAL(joint.angularUpperLimit[axis], b.angularUpperLimit[axis]);
+            MMDLAB_CHECK_EQUAL(joint.linearStiffness[axis], b.linearStiffness[axis]);
+            MMDLAB_CHECK_EQUAL(joint.angularStiffness[axis], b.angularStiffness[axis]);
+        }
+    }
+}
