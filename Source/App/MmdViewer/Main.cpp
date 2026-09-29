@@ -15,10 +15,13 @@
 #include "Runtime/DX12/RhiThread.h"
 #include "Runtime/Render/RenderThread.h"
 
+#include "tracy/Tracy.hpp"
+
 #include <windows.h>
 
 #include <chrono>
 #include <cstdint>
+#include <cwchar>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -72,24 +75,48 @@ int wmain(const int argc, wchar_t* argv[])
     // The main thread is the GameThread; give it a role name so its log lines read "[GameThread]"
     // instead of a raw OS thread id. Worker threads register themselves inside Thread::RunInternal.
     MmdLab::RegisterThreadName("GameThread");
+    tracy::SetThreadName("GameThread");
 
     try
     {
         // The editor loads every .pmx in the scan directory at startup; the user switches
-        // between them with the imgui combo. With no argument it scans the repository's
-        // Project/Models folder (found by walking up from the executable); an optional
-        // argument is a directory to scan, or a .pmx file whose parent directory is scanned.
+        // between them with the imgui combo. `--frames N` bounds the run to N produced frames
+        // (for automated profiling); any other argument is the scan directory, or a .pmx file
+        // whose parent directory is scanned. With no scan directory it falls back to
+        // Project/Models (found by walking up from the executable).
         std::filesystem::path scanDirectory;
-        if (argc >= 2)
+        std::uint32_t frameLimit = 0;
+        for (int i = 1; i < argc; ++i)
         {
-            const std::filesystem::path argument(argv[1]);
+            if (std::wcscmp(argv[i], L"--frames") == 0 && i + 1 < argc)
+            {
+                const long parsed = std::wcstol(argv[i + 1], nullptr, 10);
+                if (parsed > 0)
+                {
+                    frameLimit = static_cast<std::uint32_t>(parsed);
+                }
+                ++i;
+                continue;
+            }
+            const std::filesystem::path argument(argv[i]);
             scanDirectory = std::filesystem::is_directory(argument) ? argument : argument.parent_path();
         }
-        else
+        if (scanDirectory.empty())
         {
             const std::filesystem::path projectDirectory = FindProjectDirectory();
             scanDirectory = projectDirectory.empty() ? ExecutableDirectory() : projectDirectory / L"Models";
         }
+
+        // Create the window before the async asset load so a future splash/logo can render
+        // while the models stream in. The client size is read here and handed to the RhiThread
+        // below; the RhiThread also reads the window handle at construction.
+        MmdLab::WindowsApplication application;
+        application.Initialize(GetModuleHandleW(nullptr), SW_SHOWDEFAULT);
+
+        RECT clientRect{};
+        GetClientRect(application.GetWindowHandle(), &clientRect);
+        const std::uint32_t width = static_cast<std::uint32_t>(clientRect.right);
+        const std::uint32_t height = static_cast<std::uint32_t>(clientRect.bottom);
 
         // The async asset-load edges are declared before the world so they outlive both it and
         // the I/O workers. The group starts its workers here so the startup enqueue has live
@@ -124,14 +151,6 @@ int wmain(const int argc, wchar_t* argv[])
             }
         }
 
-        MmdLab::WindowsApplication application;
-        application.Initialize(GetModuleHandleW(nullptr), SW_SHOWDEFAULT);
-
-        RECT clientRect{};
-        GetClientRect(application.GetWindowHandle(), &clientRect);
-        const std::uint32_t width = static_cast<std::uint32_t>(clientRect.right);
-        const std::uint32_t height = static_cast<std::uint32_t>(clientRect.bottom);
-
         // The three-thread pipeline (GameThread -> RenderThread -> RhiThread) plus two UI
         // edges: Win32 input forward to the RhiThread, and selection changes back.
         MmdLab::FrameResourcePool pool;
@@ -162,9 +181,14 @@ int wmain(const int argc, wchar_t* argv[])
         // GameThread role: apply UI selection changes, project the scene into each frame, and
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
+        if (frameLimit > 0)
+        {
+            MmdLab::LogInfo("App", std::format("Running {} frame(s), then exiting", frameLimit));
+        }
         auto previousTime = std::chrono::steady_clock::now();
         while (application.ProcessMessages())
         {
+            FrameMark;
             const auto currentTime = std::chrono::steady_clock::now();
             const float deltaTime = std::chrono::duration<float>(currentTime - previousTime).count();
             previousTime = currentTime;
@@ -279,6 +303,13 @@ int wmain(const int argc, wchar_t* argv[])
             renderFrame.morphDeltaOffsets = frame.morphDeltaOffsetSnapshot;
 
             gameToRender.Push(index);
+
+            // Bound the run to `frameLimit` produced frames (0 = unlimited) so an automated
+            // profiling session captures a deterministic frame count and shuts down cleanly.
+            if (frameLimit > 0 && frameId >= frameLimit)
+            {
+                break;
+            }
         }
 
         // Shut down upstream-first so the pipeline drains in order.
