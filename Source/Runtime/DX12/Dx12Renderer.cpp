@@ -146,6 +146,30 @@ void Dx12Renderer::EnsureModelsResident(
     }
 }
 
+void Dx12Renderer::Resize(const std::uint32_t width, const std::uint32_t height)
+{
+    if (width == 0 || height == 0 || (width == width_ && height == height_))
+    {
+        return;
+    }
+
+    WaitForGpuIdle();
+
+    for (auto& backBuffer : backBuffers_)
+    {
+        backBuffer.Reset();
+    }
+    depthBuffer_.Reset();
+
+    swapChain_.Resize(width, height);
+    width_ = width;
+    height_ = height;
+
+    CreateRenderTargetViews();
+    CreateDepthBuffer();
+    LogInfo("Dx12", std::format("Resized render targets to {}x{}", width_, height_));
+}
+
 void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& model)
 {
     GpuModel gpuModel;
@@ -378,15 +402,18 @@ void Dx12Renderer::CreatePipelineState()
 
 void Dx12Renderer::CreateRenderTargetViews()
 {
-    D3D12_DESCRIPTOR_HEAP_DESC description{};
-    description.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    description.NumDescriptors = kFrameCount;
-    description.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    description.NodeMask = 0;
-
-    if (FAILED(device_.Get()->CreateDescriptorHeap(&description, IID_PPV_ARGS(&rtvHeap_))))
+    if (rtvHeap_ == nullptr)
     {
-        throw std::runtime_error("Failed to create the render-target-view descriptor heap.");
+        D3D12_DESCRIPTOR_HEAP_DESC description{};
+        description.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        description.NumDescriptors = kFrameCount;
+        description.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        description.NodeMask = 0;
+
+        if (FAILED(device_.Get()->CreateDescriptorHeap(&description, IID_PPV_ARGS(&rtvHeap_))))
+        {
+            throw std::runtime_error("Failed to create the render-target-view descriptor heap.");
+        }
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
@@ -433,15 +460,18 @@ void Dx12Renderer::CreateDepthBuffer()
         throw std::runtime_error("Failed to create the depth buffer.");
     }
 
-    D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
-    heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    heapDescription.NumDescriptors = 1;
-    heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    heapDescription.NodeMask = 0;
-
-    if (FAILED(device_.Get()->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(&dsvHeap_))))
+    if (dsvHeap_ == nullptr)
     {
-        throw std::runtime_error("Failed to create the depth-stencil-view descriptor heap.");
+        D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
+        heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        heapDescription.NumDescriptors = 1;
+        heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        heapDescription.NodeMask = 0;
+
+        if (FAILED(device_.Get()->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(&dsvHeap_))))
+        {
+            throw std::runtime_error("Failed to create the depth-stencil-view descriptor heap.");
+        }
     }
 
     device_.Get()->CreateDepthStencilView(

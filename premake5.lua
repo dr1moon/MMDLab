@@ -111,6 +111,12 @@ project "MmdCookLib"
 project "MmdViewer"
     ConfigureCppProject()
     kind "ConsoleApp"
+    debugdir "D:/MMDProject"
+    postbuildcommands {
+        '{MKDIR} "%{cfg.targetdir}/Fonts"',
+        '{COPYFILE} "%{wks.location}/Source/ThirdParty/Fonts/FanWunMing-SB.ttf" "%{cfg.targetdir}/Fonts/FanWunMing-SB.ttf"',
+        '{COPYFILE} "%{wks.location}/Source/ThirdParty/Fonts/FanWunMing-LICENSE" "%{cfg.targetdir}/Fonts/FanWunMing-LICENSE"',
+    }
     files {
         "Source/App/MmdViewer/**.h",
         "Source/App/MmdViewer/**.hpp",

@@ -669,7 +669,15 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
             bone.ikLinks.reserve(source.ikLinks.size());
             for (const PmxIkLink& link : source.ikLinks)
             {
-                bone.ikLinks.push_back(link.boneIndex);
+                MmdlIkLink cookedLink;
+                cookedLink.boneIndex = link.boneIndex;
+                cookedLink.hasLimit = link.hasLimit ? 1u : 0u;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    cookedLink.limitMin[axis] = link.limitMin[axis];
+                    cookedLink.limitMax[axis] = link.limitMax[axis];
+                }
+                bone.ikLinks.push_back(cookedLink);
             }
         }
         mesh.bones.push_back(bone);

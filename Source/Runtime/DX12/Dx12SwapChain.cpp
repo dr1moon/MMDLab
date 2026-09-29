@@ -39,4 +39,13 @@ std::uint32_t Dx12SwapChain::CurrentBackBufferIndex() const
 {
     return swapChain_->GetCurrentBackBufferIndex();
 }
+
+void Dx12SwapChain::Resize(const std::uint32_t width, const std::uint32_t height)
+{
+    if (FAILED(swapChain_->ResizeBuffers(
+        backBufferCount_, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0)))
+    {
+        throw std::runtime_error("Failed to resize the DXGI swap chain.");
+    }
+}
 } // namespace MmdLab

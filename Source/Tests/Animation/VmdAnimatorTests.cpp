@@ -151,13 +151,13 @@ MMDLAB_TEST(Animation.VmdAnimator, SamplesIkEnabledByBoneName)
     IkChain footChain;
     footChain.ikBoneIndex = 0;
     footChain.targetBoneIndex = 0;
-    footChain.links = { 0 };
+    footChain.links = { { 0 } };
     skeleton.ikChains.push_back(footChain);
 
     IkChain toeChain;
     toeChain.ikBoneIndex = 1;
     toeChain.targetBoneIndex = 1;
-    toeChain.links = { 1 };
+    toeChain.links = { { 1 } };
     skeleton.ikChains.push_back(toeChain);
 
     // A show/IK keyframe at frame 0 that disables only "footIK".

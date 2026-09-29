@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string_view>
 
 namespace MmdLab
@@ -104,29 +105,6 @@ DirectX::XMMATRIX BindRotation(const Bone& bone)
     return basis;
 }
 
-// Rotation that maps unit vector `from` onto unit vector `to`. Returns identity for near-parallel
-// inputs and a 180-degree rotation about an arbitrary perpendicular for near-opposite inputs.
-DirectX::XMVECTOR RotationBetweenUnitVectors(DirectX::XMVECTOR from, DirectX::XMVECTOR to)
-{
-    using namespace DirectX;
-    const float dot = XMVectorGetX(XMVector3Dot(from, to));
-    if (dot > 0.99999f)
-    {
-        return XMQuaternionIdentity();
-    }
-    if (dot < -0.99999f)
-    {
-        XMVECTOR axis = XMVector3Cross(from, XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f));
-        if (XMVectorGetX(XMVector3LengthSq(axis)) < 1e-6f)
-        {
-            axis = XMVector3Cross(from, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-        }
-        return XMQuaternionRotationAxis(XMVector3Normalize(axis), XM_PI);
-    }
-    // q = (1 + dot, from x to), normalized.
-    return XMQuaternionNormalize(XMVectorSetW(XMVector3Cross(from, to), 1.0f + dot));
-}
-
 // Recomputes world matrices for `bone`'s descendants (skipping `skip`) after an IK solve changed
 // `bone`'s world matrix. `local` holds the per-bone local transforms, parallel to Skeleton::bones.
 void PropagateWorld(const Skeleton& skeleton, const std::vector<DirectX::XMMATRIX>& local,
@@ -147,196 +125,350 @@ void PropagateWorld(const Skeleton& skeleton, const std::vector<DirectX::XMMATRI
     }
 }
 
-// Single-link IK ("LookAt" / damped track): rotate the link bone so the target bone points at the
-// IK control bone. The toe chains use it: rotating the ankle aims the toe at the toe-IK control.
-void SolveLookAtIk(const IkChain& chain, const Skeleton& skeleton,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+// The bind world transform of `bone` (bind rotation about the absolute head position), or the
+// identity for kInvalidBoneIndex.
+DirectX::XMMATRIX BindWorld(const Skeleton& skeleton, const BindPose& bindPose, const std::uint16_t bone)
 {
     using namespace DirectX;
-
-    const std::size_t count = skeleton.bones.size();
-    const std::uint16_t link = chain.links[0];
-    const std::uint16_t target = chain.targetBoneIndex;
-    const std::uint16_t ik = chain.ikBoneIndex;
-    if (link >= count || target >= count || ik >= count)
+    if (bone == kInvalidBoneIndex || bone >= skeleton.bones.size())
     {
-        return;
+        return XMMatrixIdentity();
     }
-
-    const XMVECTOR pivot = world[link].r[3];   // The link's head (the ankle).
-    const XMVECTOR tip = world[target].r[3];   // The target's head (the toe).
-    const XMVECTOR goal = world[ik].r[3];      // Where the target should point.
-
-    const XMVECTOR currentDelta = tip - pivot;
-    const XMVECTOR desiredDelta = goal - pivot;
-    if (XMVectorGetX(XMVector3LengthSq(currentDelta)) < 1e-10f
-        || XMVectorGetX(XMVector3LengthSq(desiredDelta)) < 1e-10f)
-    {
-        return; // Degenerate toe or target; nothing to aim.
-    }
-
-    // Rotate the link so the pivot -> tip direction aligns with pivot -> goal.
-    const XMVECTOR currentDir = XMVector3Normalize(currentDelta);
-    const XMVECTOR desiredDir = XMVector3Normalize(desiredDelta);
-    const XMMATRIX delta = XMMatrixRotationQuaternion(
-        RotationBetweenUnitVectors(currentDir, desiredDir));
-
-    XMMATRIX newLink = world[link];
-    newLink.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-    newLink = XMMatrixMultiply(newLink, delta);
-    newLink.r[3] = pivot;
-    world[link] = newLink;
-
-    PropagateWorld(skeleton, local, world, link, kInvalidBoneIndex);
+    XMMATRIX world = XMLoadFloat4x4(&bindPose.bindRotation[bone]);
+    const float* head = skeleton.bones[bone].position;
+    world.r[3] = XMVectorSet(head[0], head[1], head[2], 1.0f);
+    return world;
 }
 
-// Two-link IK (analytic two-bone solve): [joint, upper] reaches its target so the end bone lands
-// on the IK bone's position; the knee bends toward the thigh's local -X axis (the forward
-// direction the auto-roll establishes).
-void SolveTwoBoneIk(const IkChain& chain, const Skeleton& skeleton, const BindPose& bindPose,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+// The bone's world transform in the MMD frame: the runtime bind rotation removed, so the axes are
+// the model axes carried through the animated parent chain. PMX IK angle limits and VMD rotations
+// are both authored in this frame, so the IK solver works in it.
+DirectX::XMMATRIX MmdWorld(const BindPose& bindPose, const std::vector<DirectX::XMMATRIX>& world,
+    const std::uint16_t bone)
 {
     using namespace DirectX;
+    return XMMatrixMultiply(XMMatrixTranspose(XMLoadFloat4x4(&bindPose.bindRotation[bone])), world[bone]);
+}
 
-    const std::size_t count = skeleton.bones.size();
-    const std::uint16_t upper = chain.links[1];      // thigh
-    const std::uint16_t joint = chain.links[0];      // knee
-    const std::uint16_t end = chain.targetBoneIndex; // ankle
-    const std::uint16_t ik = chain.ikBoneIndex;
-    if (upper >= count || joint >= count || end >= count || ik >= count)
+constexpr float kPi = 3.14159265358979f;
+constexpr float kTwoPi = 2.0f * kPi;
+
+float NormalizeAngle(float angle)
+{
+    angle = std::fmod(angle, kTwoPi);
+    return angle < 0.0f ? angle + kTwoPi : angle;
+}
+
+float DiffAngle(const float a, const float b)
+{
+    const float diff = NormalizeAngle(a) - NormalizeAngle(b);
+    if (diff > kPi)
     {
-        return;
+        return diff - kTwoPi;
     }
-
-    const XMVECTOR rootPos = world[upper].r[3];
-    const XMVECTOR jointPos = world[joint].r[3];
-    const XMVECTOR endPos = world[end].r[3];
-    const XMVECTOR effector = world[ik].r[3];
-
-    const float upperLen = XMVectorGetX(XMVector3Length(jointPos - rootPos));
-    const float lowerLen = XMVectorGetX(XMVector3Length(endPos - jointPos));
-    const float maxLen = upperLen + lowerLen;
-
-    const XMVECTOR desiredDelta = effector - rootPos;
-    float desiredLength = XMVectorGetX(XMVector3Length(desiredDelta));
-    XMVECTOR desiredDir;
-    if (desiredLength < 1e-5f)
+    if (diff < -kPi)
     {
-        desiredLength = 1e-5f;
-        desiredDir = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f);
+        return diff + kTwoPi;
     }
-    else
-    {
-        desiredDir = desiredDelta / desiredLength;
-    }
+    return diff;
+}
 
-    // Pole: the knee bend direction. The auto-roll points the thigh's bind local +X toward the
-    // model's back, so the knee bends toward -X ("forward"). Using the bind axis (not the
-    // animated world X) keeps the pole fixed as the thigh's VMD rotation swings, so the knee
-    // cannot flip side to side; it still follows the body's orientation via the parent chain.
-    const std::uint16_t upperParent = skeleton.bones[upper].parentIndex;
-    const XMMATRIX upperParentWorld = (upperParent != kInvalidBoneIndex
-        && static_cast<std::size_t>(upperParent) < count)
-        ? world[static_cast<std::size_t>(upperParent)]
-        : XMMatrixIdentity();
-    const XMVECTOR bindX = XMLoadFloat4x4(&bindPose.bindRotation[upper]).r[0];
-    const XMVECTOR pole = XMVector3Normalize(XMVector3TransformNormal(XMVectorNegate(bindX), upperParentWorld));
+// The Euler rotation the IK limit clamp uses: Z applied first, then Y, then X (the column-vector
+// Rx * Ry * Rz of the reference MMD runtimes, written here in row-vector order).
+DirectX::XMVECTOR QuaternionFromEulerXyz(const DirectX::XMFLOAT3& euler)
+{
+    using namespace DirectX;
+    return XMQuaternionRotationMatrix(XMMatrixMultiply(
+        XMMatrixMultiply(XMMatrixRotationZ(euler.z), XMMatrixRotationY(euler.y)), XMMatrixRotationX(euler.x)));
+}
 
-    XMVECTOR bendDir = pole - XMVector3Dot(pole, desiredDir) * desiredDir;
-    if (XMVectorGetX(XMVector3LengthSq(bendDir)) < 1e-10f)
-    {
-        // The pole is collinear with the reach direction (knee/elbow pointing straight at the
-        // target): pick a stable perpendicular instead. XMVector3Orthogonal chooses the best axis
-        // up front, mirroring Unreal's FindBestAxisVectors fallback rather than a hardcoded cross.
-        bendDir = XMVector3Orthogonal(desiredDir);
-    }
-    else
-    {
-        bendDir = XMVector3Normalize(bendDir);
-    }
+// Decomposes a rotation into the Euler angles of QuaternionFromEulerXyz. Of the equivalent
+// solutions, returns the one closest to `before` so the per-iteration limit clamp stays
+// continuous; at the gimbal singularity (y = +-90 degrees) x is pinned to zero first.
+DirectX::XMFLOAT3 DecomposeEulerXyz(const DirectX::XMMATRIX& rotation, const DirectX::XMFLOAT3& before)
+{
+    using namespace DirectX;
+    XMFLOAT4X4 m;
+    XMStoreFloat4x4(&m, rotation);
 
-    XMVECTOR outJointPos;
-    XMVECTOR outEndPos;
-    if (desiredLength >= maxLen)
+    // Row-vector Rz * Ry * Rx: m[2][0] = sin(y), m[2][1] = -sin(x)cos(y), m[2][2] = cos(x)cos(y),
+    // m[1][0] = -cos(y)sin(z), m[0][0] = cos(y)cos(z).
+    XMFLOAT3 r;
+    const float sy = std::clamp(m.m[2][0], -1.0f, 1.0f);
+    r.y = std::asin(sy);
+    if (1.0f - std::fabs(sy) < 1e-6f)
     {
-        outEndPos = rootPos + maxLen * desiredDir;
-        outJointPos = rootPos + upperLen * desiredDir;
+        r.x = 0.0f;
+        r.z = std::atan2(m.m[0][1], m.m[1][1]);
     }
     else
     {
-        const float twoAB = 2.0f * upperLen * desiredLength;
-        const float cosAngle = (twoAB != 0.0f)
-            ? (upperLen * upperLen + desiredLength * desiredLength - lowerLen * lowerLen) / twoAB
-            : 0.0f;
-        const float angle = std::acos(std::clamp(cosAngle, -1.0f, 1.0f));
-        const float jointLineDist = upperLen * std::sin(angle);
-        const float projSq = upperLen * upperLen - jointLineDist * jointLineDist;
-        float projDist = projSq > 0.0f ? std::sqrt(projSq) : 0.0f;
-        if (cosAngle < 0.0f)
+        r.x = std::atan2(-m.m[2][1], m.m[2][2]);
+        r.z = std::atan2(-m.m[1][0], m.m[0][0]);
+    }
+
+    const auto Error = [&](const XMFLOAT3& candidate)
+    {
+        return std::fabs(DiffAngle(candidate.x, before.x)) + std::fabs(DiffAngle(candidate.y, before.y))
+            + std::fabs(DiffAngle(candidate.z, before.z));
+    };
+    const XMFLOAT3 candidates[] = {
+        { r.x + kPi, kPi - r.y, r.z + kPi }, { r.x + kPi, kPi - r.y, r.z - kPi },
+        { r.x + kPi, -kPi - r.y, r.z + kPi }, { r.x + kPi, -kPi - r.y, r.z - kPi },
+        { r.x - kPi, kPi - r.y, r.z + kPi }, { r.x - kPi, kPi - r.y, r.z - kPi },
+        { r.x - kPi, -kPi - r.y, r.z + kPi }, { r.x - kPi, -kPi - r.y, r.z - kPi },
+    };
+    float bestError = Error(r);
+    for (const XMFLOAT3& candidate : candidates)
+    {
+        const float error = Error(candidate);
+        if (error < bestError)
         {
-            projDist = -projDist;
+            bestError = error;
+            r = candidate;
         }
-        outJointPos = rootPos + projDist * desiredDir + jointLineDist * bendDir;
-        outEndPos = effector;
     }
-
-    // Upper (thigh): rotate so its local +Y points root -> joint, keep the root position.
-    const XMVECTOR oldUpperDir = XMVector3Normalize(jointPos - rootPos);
-    const XMVECTOR newUpperDir = XMVector3Normalize(outJointPos - rootPos);
-    const XMMATRIX deltaUpper = XMMatrixRotationQuaternion(
-        RotationBetweenUnitVectors(oldUpperDir, newUpperDir));
-    XMMATRIX newUpper = world[upper];
-    newUpper.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-    newUpper = XMMatrixMultiply(newUpper, deltaUpper);
-    newUpper.r[3] = rootPos;
-
-    // Joint (knee): rotate so its local +Y points joint -> end, position at the new joint.
-    const XMVECTOR oldJointDir = XMVector3Normalize(endPos - jointPos);
-    const XMVECTOR newJointDir = XMVector3Normalize(outEndPos - outJointPos);
-    const XMMATRIX deltaJoint = XMMatrixRotationQuaternion(
-        RotationBetweenUnitVectors(oldJointDir, newJointDir));
-    XMMATRIX newJoint = world[joint];
-    newJoint.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-    newJoint = XMMatrixMultiply(newJoint, deltaJoint);
-    newJoint.r[3] = outJointPos;
-
-    // End (ankle): keep its rotation, move its head to the effector.
-    XMMATRIX newEnd = world[end];
-    newEnd.r[3] = outEndPos;
-
-    world[upper] = newUpper;
-    world[joint] = newJoint;
-    world[end] = newEnd;
-
-    // Re-propagate the descendants of the three adjusted bones.
-    PropagateWorld(skeleton, local, world, end, kInvalidBoneIndex);
-    PropagateWorld(skeleton, local, world, joint, end);
-    PropagateWorld(skeleton, local, world, upper, joint);
+    return r;
 }
 
-// Solves the IK chains the asset declared, dispatching to the solver that matches the chain
-// length. A 1-link chain is a LookAt (aim), a 2-link chain is an analytic two-bone solve; other
-// lengths are not yet supported. `ikEnabled` is parallel to `skeleton.ikChains`; a null pointer
-// solves every chain, otherwise a false entry skips that chain.
+// A link free on exactly one axis with the other two locked (the standard knee: X only) is solved
+// as a hinge about that axis instead of by the Euler clamp, which stalls on a straight limb. The
+// "locked" test (min or max is zero) follows the reference MMD runtimes.
+int HingeAxisIndex(const IkLink& link)
+{
+    if (!link.hasLimit)
+    {
+        return -1;
+    }
+    const auto Free = [&](const int axis) { return link.limitMin[axis] != 0.0f || link.limitMax[axis] != 0.0f; };
+    const auto Locked = [&](const int axis) { return link.limitMin[axis] == 0.0f || link.limitMax[axis] == 0.0f; };
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (Free(axis) && Locked((axis + 1) % 3) && Locked((axis + 2) % 3))
+        {
+            return axis;
+        }
+    }
+    return -1;
+}
+
+// Per-link solver state. `rotation` is the link's MMD local rotation (its VMD rotation with the
+// IK correction folded in); `position` is its head plus VMD offset in bind model space, which IK
+// never changes.
+struct IkLinkState
+{
+    std::uint16_t bone = kInvalidBoneIndex;
+    DirectX::XMFLOAT4 animRotation;
+    DirectX::XMFLOAT4 rotation;
+    DirectX::XMFLOAT4 savedRotation;
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 previousEuler = { 0.0f, 0.0f, 0.0f };
+    float hingeAngle = 0.0f;
+};
+
+// Rebuilds a link's local and world transforms from its MMD local rotation and re-propagates its
+// descendants. local = R_bind * R_mmd * T(position) * inverseBind(parent), the composition the
+// VMD animator uses, so the palette stays inverseBind * world.
+void WriteIkLink(const Skeleton& skeleton, const BindPose& bindPose, const IkLinkState& state,
+    std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+{
+    using namespace DirectX;
+    const std::uint16_t bone = state.bone;
+    const std::uint16_t parent = skeleton.bones[bone].parentIndex;
+    const bool hasParent = parent != kInvalidBoneIndex && parent < skeleton.bones.size();
+
+    XMMATRIX posed = XMMatrixMultiply(XMLoadFloat4x4(&bindPose.bindRotation[bone]),
+        XMMatrixRotationQuaternion(XMQuaternionNormalize(XMLoadFloat4(&state.rotation))));
+    posed.r[3] = XMVectorSetW(XMLoadFloat3(&state.position), 1.0f);
+    local[bone] = hasParent ? XMMatrixMultiply(posed, XMLoadFloat4x4(&bindPose.inverseBind[parent])) : posed;
+    world[bone] = hasParent ? XMMatrixMultiply(local[bone], world[parent]) : local[bone];
+    PropagateWorld(skeleton, local, world, bone, kInvalidBoneIndex);
+}
+
+// One cyclic coordinate descent (CCD) sweep over the chain, tip to root, following the PMX IK
+// definition: each link turns so the target moves toward the IK bone by at most the chain's
+// per-iteration angle, then the link's angle limits are applied.
+void SolveIkIteration(const IkChain& chain, const Skeleton& skeleton, const BindPose& bindPose,
+    std::vector<IkLinkState>& states, const int iteration,
+    std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+{
+    using namespace DirectX;
+    const XMVECTOR ikPos = world[chain.ikBoneIndex].r[3];
+
+    for (std::size_t k = 0; k < states.size(); ++k)
+    {
+        IkLinkState& state = states[k];
+        const IkLink& link = chain.links[k];
+        if (state.bone == chain.targetBoneIndex)
+        {
+            continue;
+        }
+
+        // Both points in the link's own (rotated) MMD frame, so a rotation `delta` found here
+        // composes as delta * R_link. A hinge keeps R_link = hinge(angle) * R_vmd, and turns about
+        // the same axis commute, so delta * R_link = hinge(angle + delta) * R_vmd exactly.
+        const XMMATRIX inverseLink = XMMatrixInverse(nullptr, MmdWorld(bindPose, world, state.bone));
+        const XMVECTOR toIk = XMVector3TransformCoord(ikPos, inverseLink);
+        const XMVECTOR toTarget = XMVector3TransformCoord(world[chain.targetBoneIndex].r[3], inverseLink);
+        if (XMVectorGetX(XMVector3LengthSq(toIk)) < 1e-12f || XMVectorGetX(XMVector3LengthSq(toTarget)) < 1e-12f)
+        {
+            continue;
+        }
+        const XMVECTOR ikDir = XMVector3Normalize(toIk);
+        const XMVECTOR targetDir = XMVector3Normalize(toTarget);
+        const float angle = std::min(
+            std::acos(std::clamp(XMVectorGetX(XMVector3Dot(targetDir, ikDir)), -1.0f, 1.0f)),
+            chain.limitAngle);
+
+        const int hingeAxis = HingeAxisIndex(link);
+        if (hingeAxis >= 0)
+        {
+            // Hinge: turn about the single free axis in whichever direction brings the target
+            // closer, and accumulate the angle so the limit bounds the total bend. The bend is a
+            // pure rotation about the limit axis, so the knee cannot twist off its hinge (no roll
+            // is introduced, unlike a free swing).
+            const XMVECTOR axis = XMVectorSetByIndex(XMVectorZero(), 1.0f, static_cast<std::size_t>(hingeAxis));
+            const float dotPositive = XMVectorGetX(XMVector3Dot(
+                XMVector3Rotate(targetDir, XMQuaternionRotationAxis(axis, angle)), ikDir));
+            const float dotNegative = XMVectorGetX(XMVector3Dot(
+                XMVector3Rotate(targetDir, XMQuaternionRotationAxis(axis, -angle)), ikDir));
+            float newAngle = state.hingeAngle + (dotPositive > dotNegative ? angle : -angle);
+
+            const float minAngle = link.limitMin[hingeAxis];
+            const float maxAngle = link.limitMax[hingeAxis];
+            if (iteration == 0 && (newAngle < minAngle || newAngle > maxAngle))
+            {
+                // From a nearly straight limb both bend directions look alike; take the one the
+                // limit allows (the knee bends forward) instead of clamping back to straight.
+                if (-newAngle > minAngle && -newAngle < maxAngle)
+                {
+                    newAngle = -newAngle;
+                }
+                else
+                {
+                    const float half = 0.5f * (minAngle + maxAngle);
+                    if (std::fabs(half - newAngle) > std::fabs(half + newAngle))
+                    {
+                        newAngle = -newAngle;
+                    }
+                }
+            }
+            state.hingeAngle = std::clamp(newAngle, minAngle, maxAngle);
+            XMStoreFloat4(&state.rotation, XMQuaternionMultiply(
+                XMQuaternionRotationAxis(axis, state.hingeAngle), XMLoadFloat4(&state.animRotation)));
+        }
+        else
+        {
+            const XMVECTOR cross = XMVector3Cross(targetDir, ikDir);
+            if (angle < 1e-5f || XMVectorGetX(XMVector3LengthSq(cross)) < 1e-12f)
+            {
+                continue;
+            }
+            XMVECTOR rotation = XMQuaternionMultiply(
+                XMQuaternionRotationAxis(XMVector3Normalize(cross), angle), XMLoadFloat4(&state.rotation));
+            if (link.hasLimit)
+            {
+                // Clamp each Euler angle to the limit, and its change this iteration to the
+                // chain's per-iteration angle.
+                const XMFLOAT3 euler = DecomposeEulerXyz(XMMatrixRotationQuaternion(rotation), state.previousEuler);
+                const float raw[3] = { euler.x, euler.y, euler.z };
+                const float before[3] = { state.previousEuler.x, state.previousEuler.y, state.previousEuler.z };
+                float clamped[3];
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    const float limited = std::clamp(raw[axis], link.limitMin[axis], link.limitMax[axis]);
+                    clamped[axis] = before[axis] + std::clamp(limited - before[axis], -chain.limitAngle, chain.limitAngle);
+                }
+                state.previousEuler = XMFLOAT3(clamped[0], clamped[1], clamped[2]);
+                rotation = QuaternionFromEulerXyz(state.previousEuler);
+            }
+            XMStoreFloat4(&state.rotation, rotation);
+        }
+
+        WriteIkLink(skeleton, bindPose, state, local, world);
+    }
+}
+
+// Solves one PMX IK chain with CCD, starting from the animated pose. Each iteration that brings
+// the target closer is kept; the first one that does not is rolled back and ends the solve.
+void SolveIkChain(const IkChain& chain, const Skeleton& skeleton, const BindPose& bindPose,
+    std::vector<IkLinkState>& states, std::vector<DirectX::XMMATRIX>& local,
+    std::vector<DirectX::XMMATRIX>& world)
+{
+    ZoneScopedN("Animation.IK.Chain");
+    using namespace DirectX;
+    const std::size_t count = skeleton.bones.size();
+    if (chain.ikBoneIndex >= count || chain.targetBoneIndex >= count || chain.links.empty())
+    {
+        return;
+    }
+
+    states.clear();
+    for (const IkLink& link : chain.links)
+    {
+        if (link.boneIndex >= count)
+        {
+            return;
+        }
+        // Recover the VMD rotation and head position from the local transform:
+        // local * bindWorld(parent) = R_bind * R_vmd * T(position).
+        const std::uint16_t parent = skeleton.bones[link.boneIndex].parentIndex;
+        const XMMATRIX posed = XMMatrixMultiply(local[link.boneIndex], BindWorld(skeleton, bindPose, parent));
+        const XMMATRIX bindRotation = XMLoadFloat4x4(&bindPose.bindRotation[link.boneIndex]);
+
+        IkLinkState state;
+        state.bone = link.boneIndex;
+        XMStoreFloat4(&state.animRotation, XMQuaternionNormalize(XMQuaternionRotationMatrix(
+            XMMatrixMultiply(XMMatrixTranspose(bindRotation), posed))));
+        state.rotation = state.animRotation;
+        state.savedRotation = state.animRotation;
+        XMStoreFloat3(&state.position, posed.r[3]);
+        states.push_back(state);
+    }
+
+    float bestDistance = std::numeric_limits<float>::max();
+    for (int iteration = 0; iteration < chain.loopCount; ++iteration)
+    {
+        SolveIkIteration(chain, skeleton, bindPose, states, iteration, local, world);
+
+        const float distance = XMVectorGetX(XMVector3Length(
+            world[chain.targetBoneIndex].r[3] - world[chain.ikBoneIndex].r[3]));
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            for (IkLinkState& state : states)
+            {
+                state.savedRotation = state.rotation;
+            }
+            continue;
+        }
+
+        // Root to tip, so each link is rebuilt on its already-restored parent.
+        for (auto it = states.rbegin(); it != states.rend(); ++it)
+        {
+            it->rotation = it->savedRotation;
+            WriteIkLink(skeleton, bindPose, *it, local, world);
+        }
+        break;
+    }
+}
+
+// Solves the IK chains the asset declared, in declaration order. `ikEnabled` is parallel to
+// `skeleton.ikChains`; a null pointer solves every chain, otherwise a false entry skips that
+// chain. The link local transforms are rewritten so the later passes build on the solved pose.
 void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
+    std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
     const std::vector<bool>* ikEnabled)
 {
+    ZoneScopedN("Animation.IK");
+    std::vector<IkLinkState> states;
     for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
     {
         if (ikEnabled != nullptr && i < ikEnabled->size() && !(*ikEnabled)[i])
         {
             continue;
         }
-        const IkChain& chain = skeleton.ikChains[i];
-        if (chain.links.size() == 1)
-        {
-            SolveLookAtIk(chain, skeleton, local, world);
-        }
-        else if (chain.links.size() == 2)
-        {
-            SolveTwoBoneIk(chain, skeleton, bindPose, local, world);
-        }
+        SolveIkChain(skeleton.ikChains[i], skeleton, bindPose, states, local, world);
     }
 }
 
@@ -345,6 +477,7 @@ void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
 void ApplyFixedAxis(const Skeleton& skeleton, const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
 {
+    ZoneScopedN("Animation.FixedAxis");
     using namespace DirectX;
     const std::size_t count = skeleton.bones.size();
     for (std::size_t i = 0; i < count; ++i)
@@ -401,6 +534,7 @@ void ApplyFixedAxis(const Skeleton& skeleton, const BindPose& bindPose,
 void ApplyInheritTranslation(const Skeleton& skeleton,
     const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
 {
+    ZoneScopedN("Animation.InheritTranslation");
     using namespace DirectX;
     const std::size_t count = skeleton.bones.size();
     for (std::size_t i = 0; i < count; ++i)
@@ -430,6 +564,7 @@ void ApplyInheritTranslation(const Skeleton& skeleton,
 void ApplyInheritRotation(const Skeleton& skeleton, const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
 {
+    ZoneScopedN("Animation.InheritRotation");
     using namespace DirectX;
 
     const std::size_t count = skeleton.bones.size();
@@ -529,7 +664,7 @@ void EvaluateSkeletonPose(
     std::vector<DirectX::XMMATRIX>& scratchWorld,
     const std::vector<bool>* ikEnabled)
 {
-    ZoneScopedN("EvaluateSkeletonPose");
+    ZoneScopedN("Animation.EvaluateSkeletonPose");
     using namespace DirectX;
 
     const std::size_t count = skeleton.bones.size();
@@ -541,21 +676,27 @@ void EvaluateSkeletonPose(
     // Load the per-bone local transforms (motion or bind) so the IK pass can re-propagate
     // descendants from them after adjusting a chain.
     std::vector<XMMATRIX> local(count);
-    for (std::size_t i = 0; i < count; ++i)
     {
-        local[i] = hasMotion
-            ? XMLoadFloat4x4(&motionPose->local[i])
-            : XMLoadFloat4x4(&bindPose.localBind[i]);
+        ZoneScopedN("Animation.Evaluate.LoadLocalPose");
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            local[i] = hasMotion
+                ? XMLoadFloat4x4(&motionPose->local[i])
+                : XMLoadFloat4x4(&bindPose.localBind[i]);
+        }
     }
 
     // Forward kinematics: parent-relative local transforms accumulated up the hierarchy.
-    for (std::size_t i = 0; i < count; ++i)
     {
-        const Bone& bone = skeleton.bones[i];
-        const XMMATRIX parentWorld = (bone.parentIndex != kInvalidBoneIndex && static_cast<std::size_t>(bone.parentIndex) < count)
-            ? scratchWorld[static_cast<std::size_t>(bone.parentIndex)]
-            : XMMatrixIdentity();
-        scratchWorld[i] = XMMatrixMultiply(local[i], parentWorld);
+        ZoneScopedN("Animation.Evaluate.ForwardKinematics");
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const Bone& bone = skeleton.bones[i];
+            const XMMATRIX parentWorld = (bone.parentIndex != kInvalidBoneIndex && static_cast<std::size_t>(bone.parentIndex) < count)
+                ? scratchWorld[static_cast<std::size_t>(bone.parentIndex)]
+                : XMMatrixIdentity();
+            scratchWorld[i] = XMMatrixMultiply(local[i], parentWorld);
+        }
     }
 
     // Solve the IK chains on top of the animated pose (the bind pose needs no solving).
@@ -572,10 +713,13 @@ void EvaluateSkeletonPose(
 
     // Skinning matrix = inverseBind * world: re-project the model-space vertex into the bone's
     // bind space, then out through the (possibly IK-adjusted) animated world transform.
-    for (std::size_t i = 0; i < count; ++i)
     {
-        const XMMATRIX inverseBind = XMLoadFloat4x4(&bindPose.inverseBind[i]);
-        XMStoreFloat4x4(&outPalette[i], XMMatrixMultiply(inverseBind, scratchWorld[i]));
+        ZoneScopedN("Animation.Evaluate.BuildSkinningPalette");
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const XMMATRIX inverseBind = XMLoadFloat4x4(&bindPose.inverseBind[i]);
+            XMStoreFloat4x4(&outPalette[i], XMMatrixMultiply(inverseBind, scratchWorld[i]));
+        }
     }
 }
 } // namespace MmdLab

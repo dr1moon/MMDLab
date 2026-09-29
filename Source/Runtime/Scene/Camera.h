@@ -27,6 +27,7 @@ struct Camera
     void Orbit(float deltaX, float deltaY);
     void Zoom(float wheelDelta);
     void Pan(float deltaX, float deltaY);
+    void SetFovDegrees(float degrees);
     void FrameTo(const float boundsMin[3], const float boundsMax[3]);
     void Tick(float deltaTime);
 };

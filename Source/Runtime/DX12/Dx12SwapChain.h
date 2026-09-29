@@ -27,6 +27,8 @@ public:
     [[nodiscard]] IDXGISwapChain3* Get() const { return swapChain_.Get(); }
     [[nodiscard]] std::uint32_t BackBufferCount() const { return backBufferCount_; }
 
+    void Resize(std::uint32_t width, std::uint32_t height);
+
     // The index of the back buffer that the next frame should render into.
     [[nodiscard]] std::uint32_t CurrentBackBufferIndex() const;
 

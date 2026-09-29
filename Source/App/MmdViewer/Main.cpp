@@ -27,44 +27,6 @@
 #include <format>
 #include <string>
 
-namespace
-{
-// The directory holding the running executable.
-std::filesystem::path ExecutableDirectory()
-{
-    wchar_t buffer[MAX_PATH];
-    const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH)
-    {
-        return std::filesystem::current_path();
-    }
-    return std::filesystem::path(std::wstring(buffer, length)).parent_path();
-}
-
-// Walks up from the executable directory looking for the repository's Project folder, so the
-// editor finds Project/Models without a command-line argument when run from its build output.
-// Returns an empty path when no Project folder is found.
-std::filesystem::path FindProjectDirectory()
-{
-    std::filesystem::path current = ExecutableDirectory();
-    for (int level = 0; level < 6 && !current.empty(); ++level)
-    {
-        const std::filesystem::path candidate = current / L"Project";
-        if (std::filesystem::is_directory(candidate))
-        {
-            return candidate;
-        }
-        const std::filesystem::path parent = current.parent_path();
-        if (parent == current)
-        {
-            break;
-        }
-        current = parent;
-    }
-    return {};
-}
-} // namespace
-
 int wmain(const int argc, wchar_t* argv[])
 {
     // Diagnostics are written as UTF-8; switch the console to UTF-8 so non-ASCII model names
@@ -79,12 +41,13 @@ int wmain(const int argc, wchar_t* argv[])
 
     try
     {
-        // The editor loads every .pmx in the scan directory at startup; the user switches
-        // between them with the imgui combo. `--frames N` bounds the run to N produced frames
-        // (for automated profiling); any other argument is the scan directory, or a .pmx file
-        // whose parent directory is scanned. With no scan directory it falls back to
-        // Project/Models (found by walking up from the executable).
-        std::filesystem::path scanDirectory;
+        // The working directory is the project (see Project/Project.md): the editor loads every
+        // .pmx under Models/ at startup, and the user switches between them with the imgui combo,
+        // and plays the .vmd files under Motions/. `--frames N` bounds the run to N produced
+        // frames (for automated profiling); any other argument overrides the model scan directory
+        // (or names a .pmx file whose parent directory is scanned).
+        const std::filesystem::path projectDirectory = std::filesystem::current_path();
+        std::filesystem::path scanDirectory = projectDirectory / L"Models";
         std::uint32_t frameLimit = 0;
         for (int i = 1; i < argc; ++i)
         {
@@ -101,11 +64,7 @@ int wmain(const int argc, wchar_t* argv[])
             const std::filesystem::path argument(argv[i]);
             scanDirectory = std::filesystem::is_directory(argument) ? argument : argument.parent_path();
         }
-        if (scanDirectory.empty())
-        {
-            const std::filesystem::path projectDirectory = FindProjectDirectory();
-            scanDirectory = projectDirectory.empty() ? ExecutableDirectory() : projectDirectory / L"Models";
-        }
+        MmdLab::LogInfo("App", std::format("Project directory {}", MmdLab::WideToUtf8(projectDirectory.wstring())));
 
         // Create the window before the async asset load so a future splash/logo can render
         // while the models stream in. The client size is read here and handed to the RhiThread
@@ -138,17 +97,13 @@ int wmain(const int argc, wchar_t* argv[])
             MmdLab::LogError("Asset", std::format("No .pmx models found in {}", scanDirectory.string()));
         }
 
-        // Scan every VMD motion in Project/Motions and auto-select the first so the loaded models
-        // are posed once they finish loading. Motions are optional; with none the viewer stays in
-        // the bind pose. The Motion tab switches and scrubs playback.
-        const std::filesystem::path projectDirectory = FindProjectDirectory();
-        if (!projectDirectory.empty())
+        // Scan every VMD motion in the project's Motions/ and auto-select the first so the loaded
+        // models are posed once they finish loading. Motions are optional; with none the viewer
+        // stays in the bind pose. The Motion tab switches and scrubs playback.
+        world.LoadMotionsFromDirectory(projectDirectory / L"Motions");
+        if (!world.Motions().empty())
         {
-            world.LoadMotionsFromDirectory(projectDirectory / L"Motions");
-            if (!world.Motions().empty())
-            {
-                world.SelectMotion(0);
-            }
+            world.SelectMotion(0);
         }
 
         // The three-thread pipeline (GameThread -> RenderThread -> RhiThread) plus two UI
@@ -211,6 +166,9 @@ int wmain(const int argc, wchar_t* argv[])
                         break;
                     case MmdLab::UiCommand::SeekMotion:
                         world.SeekMotion(request->seekFrames);
+                        break;
+                    case MmdLab::UiCommand::SetCameraFov:
+                        world.GetCamera().SetFovDegrees(request->fovDegrees);
                         break;
                 }
             }

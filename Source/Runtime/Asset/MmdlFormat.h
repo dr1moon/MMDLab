@@ -11,12 +11,12 @@
 
 namespace MmdLab
 {
-// The provisional .mmdl native asset format (version 6): a fixed header, a chunk table, and
+// The provisional .mmdl native asset format: a fixed header, a chunk table, and
 // fixed-width data chunks. All integers are little-endian and fixed-width; the file contains
 // no pointers, raw C++ containers, or compiler-dependent enums.
 
 inline constexpr std::uint32_t MmdlMagic = 0x4C444D4D; // "MMDL".
-inline constexpr std::uint32_t MmdlVersion = 8;
+inline constexpr std::uint32_t MmdlVersion = 9;
 
 enum class MmdlChunkType : std::uint32_t
 {
@@ -85,6 +85,14 @@ static_assert(sizeof(MmdlVertex) == 48);
 // axes, "付与" (grant) inheritance, axis constraint, and IK chain the PMX stored. This is the
 // complete cooked representation, so a .mmdl load needs no PMX re-parse. The name is stored
 // inline (not in the string table) so the string table stays texture paths only.
+struct MmdlIkLink
+{
+    std::uint16_t boneIndex = kInvalidBoneIndex;
+    std::uint32_t hasLimit = 0;
+    float limitMin[3] = { 0.0f, 0.0f, 0.0f };
+    float limitMax[3] = { 0.0f, 0.0f, 0.0f };
+};
+
 struct MmdlBone
 {
     std::string name;
@@ -109,7 +117,7 @@ struct MmdlBone
     std::uint16_t ikTargetIndex = kInvalidBoneIndex;
     std::int32_t ikLoopCount = 0;
     float ikLimitAngle = 0.0f;
-    std::vector<std::uint16_t> ikLinks;
+    std::vector<MmdlIkLink> ikLinks;
 };
 
 // Per-vertex linear-blend-skinning weights, parallel to the vertex buffer. Up to four bone

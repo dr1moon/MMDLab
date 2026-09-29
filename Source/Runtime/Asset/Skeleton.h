@@ -41,14 +41,28 @@ struct Bone
     float fixedAxis[3] = { 0.0f, 0.0f, 0.0f };
 };
 
+// One link of an IK chain. PMX may constrain a link's local VMD rotation to an Euler-angle range;
+// standard knees lock two axes and permit only forward/backward bending on the remaining axis.
+struct IkLink
+{
+    std::uint16_t boneIndex = kInvalidBoneIndex;
+    bool hasLimit = false;
+    float limitMin[3] = { 0.0f, 0.0f, 0.0f };
+    float limitMax[3] = { 0.0f, 0.0f, 0.0f };
+};
+
 // One IK chain declared by the source asset: the IK control bone, the end bone the chain reaches
 // toward, and the link bones to rotate. Links are ordered tip-to-root, so a leg chain is
-// [knee, thigh] with the ankle as the target (the IK bone is the foot control).
+// [knee, thigh] with the ankle as the target (the IK bone is the foot control). The chain is
+// solved by cyclic coordinate descent (CCD): at most `loopCount` sweeps, each turning a link by
+// at most `limitAngle` radians.
 struct IkChain
 {
     std::uint16_t ikBoneIndex = kInvalidBoneIndex;   // The IK control bone (e.g. the foot IK).
     std::uint16_t targetBoneIndex = kInvalidBoneIndex; // The end bone (e.g. the ankle).
-    std::vector<std::uint16_t> links;                // Chain bones, tip-to-root.
+    std::int32_t loopCount = 40;
+    float limitAngle = 2.0f;
+    std::vector<IkLink> links;                       // Chain bones, tip-to-root.
 };
 
 // The static bone hierarchy of a model, kept alongside the mesh so skeleton evaluation can walk

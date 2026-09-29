@@ -52,6 +52,8 @@ public:
         std::span<const ModelInstance> instances,
         std::span<const Model> models);
 
+    void Resize(std::uint32_t width, std::uint32_t height);
+
     // Records and submits one frame's draw list plus the imgui overlay, presents, and returns
     // the monotonic GPU fence value for this frame. The caller gates frame-resource reuse on it.
     [[nodiscard]] std::uint64_t Render(

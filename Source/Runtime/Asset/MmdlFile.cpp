@@ -290,7 +290,13 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             bone.ikLimitAngle = reader.ReadF32();
             const std::uint32_t linkCount = reader.ReadU32();
             bone.ikLinks.resize(linkCount);
-            for (std::uint16_t& link : bone.ikLinks) { link = reader.ReadU16(); }
+            for (MmdlIkLink& link : bone.ikLinks)
+            {
+                link.boneIndex = reader.ReadU16();
+                link.hasLimit = reader.ReadU32();
+                for (float& value : link.limitMin) { value = reader.ReadF32(); }
+                for (float& value : link.limitMax) { value = reader.ReadF32(); }
+            }
             mesh.bones.push_back(bone);
         }
     }

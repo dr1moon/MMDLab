@@ -168,9 +168,12 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         skeleton.I32(bone.ikLoopCount);
         skeleton.F32(bone.ikLimitAngle);
         skeleton.U32(static_cast<std::uint32_t>(bone.ikLinks.size()));
-        for (const std::uint16_t link : bone.ikLinks)
+        for (const MmdlIkLink& link : bone.ikLinks)
         {
-            skeleton.U16(link);
+            skeleton.U16(link.boneIndex);
+            skeleton.U32(link.hasLimit);
+            for (const float value : link.limitMin) { skeleton.F32(value); }
+            for (const float value : link.limitMax) { skeleton.F32(value); }
         }
     }
 

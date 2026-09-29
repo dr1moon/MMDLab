@@ -67,7 +67,21 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         IkChain chain;
         chain.ikBoneIndex = static_cast<std::uint16_t>(i);
         chain.targetBoneIndex = source.ikTargetIndex;
-        chain.links = source.ikLinks;
+        chain.loopCount = source.ikLoopCount;
+        chain.limitAngle = source.ikLimitAngle;
+        chain.links.reserve(source.ikLinks.size());
+        for (const MmdlIkLink& sourceLink : source.ikLinks)
+        {
+            IkLink link;
+            link.boneIndex = sourceLink.boneIndex;
+            link.hasLimit = sourceLink.hasLimit != 0;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                link.limitMin[axis] = sourceLink.limitMin[axis];
+                link.limitMax[axis] = sourceLink.limitMax[axis];
+            }
+            chain.links.push_back(link);
+        }
         model.skeleton.ikChains.push_back(std::move(chain));
     }
 

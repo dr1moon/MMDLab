@@ -1,6 +1,8 @@
 # MMDLab Project
 
-A project holds the MikuMikuDance assets the editor loads. `Models/` holds one subfolder per
+A project holds the MikuMikuDance assets the editor loads. `MmdViewer` uses its working
+directory as the project, so launch it from the project folder (the Visual Studio debugger
+sets it through `debugdir` in `premake5.lua`). `Models/` holds one subfolder per
 PMX model (its `.pmx` plus the `textures/` it references); `Motions/` holds VMD motion files
 (the viewer's Motion tab lists and plays them). PMX and VMD are MikuMikuDance file-format identifiers.
 

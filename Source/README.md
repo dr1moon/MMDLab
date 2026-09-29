@@ -364,7 +364,7 @@ MaterialTable               # Minimal material constants
 
 ## Startup Upload Path
 
-The first milestone does not implement streaming. Before frame production begins, `MmdViewer` (an editor application) scans `Project/Models` — found by walking up from the executable, with the folder structure documented in `Project/Project.md` — recursively for `.pmx` files and, through `Runtime/Asset`, parses and cooks each one into a CPU-side `MeshAsset` plus decoded textures held by the GameThread's `Scene`. The selected model's mesh and textures are projected into each frame; when the selection changes, `RhiThread` rebuilds the GPU buffers and texture SRVs via `Dx12Renderer::SetModel`, waiting for in-flight GPU work before releasing the previous model's resources.
+The first milestone does not implement streaming. Before frame production begins, `MmdViewer` (an editor application) scans `Models/` under the project directory — the working directory, with the folder structure documented in `Project/Project.md` — recursively for `.pmx` files and, through `Runtime/Asset`, parses and cooks each one into a CPU-side `MeshAsset` plus decoded textures held by the GameThread's `Scene`. The selected model's mesh and textures are projected into each frame; when the selection changes, `RhiThread` rebuilds the GPU buffers and texture SRVs via `Dx12Renderer::SetModel`, waiting for in-flight GPU work before releasing the previous model's resources.
 
 This one-time bootstrap path is intentionally synchronous. Introduce `AssetToRhiUploadQueue` only when asynchronous loading or runtime asset replacement becomes a measured requirement.
 

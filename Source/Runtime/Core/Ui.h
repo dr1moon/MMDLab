@@ -18,6 +18,7 @@ enum class UiCommand : std::uint32_t
     SelectMotion,
     SetMotionPlaying,
     SeekMotion,
+    SetCameraFov,
 };
 
 // RhiThread -> GameThread: a user edit from the imgui panel. SelectLevel changes the level combo;
@@ -30,6 +31,7 @@ struct UiRequest
     bool visible = true;       // SetInstanceVisible: the instance's new visibility state.
     bool playing = true;       // SetMotionPlaying: whether the motion advances.
     float seekFrames = 0.0f;   // SeekMotion: target playback time in 30 fps frames.
+    float fovDegrees = 45.0f;  // SetCameraFov: vertical field of view in degrees.
 };
 
 // RhiThread -> GameThread: orbit/pan/zoom deltas the user produced this frame (mouse

@@ -13,12 +13,27 @@
 #include "imgui_impl_win32.h"
 
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <vector>
 
 // imgui's Win32 backend deliberately keeps this declaration out of its header (see the #if 0
 // block in imgui_impl_win32.h); the application forwards its window messages through it.
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+namespace
+{
+std::filesystem::path ExecutableDirectory()
+{
+    wchar_t buffer[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH)
+    {
+        return std::filesystem::current_path();
+    }
+    return std::filesystem::path(std::wstring(buffer, length)).parent_path();
+}
+} // namespace
 
 namespace MmdLab
 {
@@ -75,12 +90,14 @@ bool RhiThread::Init()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         ImGui::StyleColorsDark();
 
-        // The embedded font has no CJK glyphs, so load a system font covering Simplified
-        // Chinese for non-ASCII model names; fall back to the embedded font if it is absent.
+        // ImGui builds the font atlas from this bundled OFL font at startup. Loading it beside
+        // the executable makes CJK rendering independent of the operating system's font set.
+        const std::filesystem::path fontPath = ExecutableDirectory() / L"Fonts" / L"FanWunMing-SB.ttf";
         ImFont* font = io.Fonts->AddFontFromFileTTF(
-            "C:/Windows/Fonts/msyh.ttc", 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+            fontPath.string().c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font == nullptr)
         {
+            LogWarning("RhiThread", std::format("Failed to load bundled UI font {}", fontPath.string()));
             io.Fonts->AddFontDefault();
         }
 
@@ -136,6 +153,26 @@ uint32_t RhiThread::Run()
                 message->message,
                 static_cast<WPARAM>(message->wordParameter),
                 static_cast<LPARAM>(message->longParameter));
+
+            if (message->message == WM_SIZE)
+            {
+                const std::uint32_t width = LOWORD(message->longParameter);
+                const std::uint32_t height = HIWORD(message->longParameter);
+                minimized_ = width == 0 || height == 0;
+                if (!minimized_ && !renderFailed)
+                {
+                    try
+                    {
+                        renderer_->Resize(width, height);
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        LogError("RhiThread", std::format("resize failed: {}", exception.what()));
+                        renderFailed = true;
+                        PostMessageW(window_, WM_CLOSE, 0, 0);
+                    }
+                }
+            }
         }
 
         ImGui_ImplDX12_NewFrame();
@@ -197,7 +234,7 @@ uint32_t RhiThread::Run()
             {
                 if (batch.motions.empty())
                 {
-                    ImGui::Text("No motions found. Place .vmd files in Project/Motions.");
+                    ImGui::Text("No motions found. Place .vmd files in <project>/Motions.");
                 }
                 else
                 {
@@ -327,6 +364,16 @@ uint32_t RhiThread::Run()
                 ImGui::EndTabItem();
             }
 
+            if (ImGui::BeginTabItem("Camera"))
+            {
+                float fovDegrees = batch.camera.fovDegrees;
+                if (ImGui::SliderFloat("Vertical FOV", &fovDegrees, 10.0f, 120.0f, "%.1f deg"))
+                {
+                    uiQueue_->TryPush(UiRequest{ .command = UiCommand::SetCameraFov, .fovDegrees = fovDegrees });
+                }
+                ImGui::EndTabItem();
+            }
+
             ImGui::EndTabBar();
         }
         ImGui::End();
@@ -355,7 +402,7 @@ uint32_t RhiThread::Run()
         ImGui::Render();
         ImDrawData* drawData = ImGui::GetDrawData();
 
-        if (!renderFailed)
+        if (!renderFailed && !minimized_)
         {
             // Build GPU resources only when the selected level's generation changed.
             if (!batch.instances.empty() && batch.levelGeneration != lastLevelGeneration_)
@@ -403,8 +450,6 @@ uint32_t RhiThread::Run()
         }
         else
         {
-            // Degraded drain: rendering is broken. Retire frames immediately and keep consuming
-            // so the upstream stages can drain and shut down cleanly instead of deadlocking.
             frame.gpuFenceValue = 0;
         }
 

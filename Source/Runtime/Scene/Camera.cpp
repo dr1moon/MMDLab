@@ -10,6 +10,8 @@ constexpr float kDegreesToRadians = kPi / 180.0f;
 constexpr float kOrbitSensitivity = 0.25f; // Degrees per pixel of orbit drag.
 constexpr float kPanScale = 0.002f;        // Pivot translation per pixel, relative to distance.
 constexpr float kPitchLimitDegrees = 89.0f;
+constexpr float kMinimumFovDegrees = 10.0f;
+constexpr float kMaximumFovDegrees = 120.0f;
 
 // The camera's forward vector (local +Z in world space) for a YXZ Euler rotation, assuming
 // zero roll (the orbit interaction keeps roll at zero).
@@ -70,6 +72,11 @@ void Camera::Pan(const float deltaX, const float deltaY)
     pivot[0] += (-right[0] * deltaX + camUp[0] * deltaY) * scale;
     pivot[1] += (-right[1] * deltaX + camUp[1] * deltaY) * scale;
     pivot[2] += (-right[2] * deltaX + camUp[2] * deltaY) * scale;
+}
+
+void Camera::SetFovDegrees(const float degrees)
+{
+    fovDegrees = std::max(kMinimumFovDegrees, std::min(kMaximumFovDegrees, degrees));
 }
 
 void Camera::FrameTo(const float boundsMin[3], const float boundsMax[3])

@@ -76,7 +76,12 @@ MmdLab::MmdlMeshData MakeTestMesh()
     root.ikTargetIndex = 1; // root drives an IK chain targeting the child.
     root.ikLoopCount = 40;
     root.ikLimitAngle = 2.0f;
-    root.ikLinks = { 1 };
+    MmdLab::MmdlIkLink ikLink;
+    ikLink.boneIndex = 1;
+    ikLink.hasLimit = 1u;
+    ikLink.limitMin[0] = -1.0f;
+    ikLink.limitMax[0] = 0.5f;
+    root.ikLinks = { ikLink };
 
     mesh.bones = { root, child };
 
@@ -181,7 +186,13 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
         MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks.size(), actual.bones[i].ikLinks.size());
         for (std::size_t link = 0; link < expected.bones[i].ikLinks.size(); ++link)
         {
-            MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link], actual.bones[i].ikLinks[link]);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link].boneIndex, actual.bones[i].ikLinks[link].boneIndex);
+            MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link].hasLimit, actual.bones[i].ikLinks[link].hasLimit);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link].limitMin[axis], actual.bones[i].ikLinks[link].limitMin[axis]);
+                MMDLAB_CHECK_EQUAL(expected.bones[i].ikLinks[link].limitMax[axis], actual.bones[i].ikLinks[link].limitMax[axis]);
+            }
         }
     }
 

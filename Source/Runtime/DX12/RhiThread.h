@@ -57,6 +57,7 @@ private:
     std::unique_ptr<Dx12Renderer> renderer_;
     std::unique_ptr<RenderDocCapture> capture_;
     bool captureRequested_ = false;
+    bool minimized_ = false;
     ImGuiContext* imguiContext_ = nullptr;
     // Level generation last applied to the renderer; the sentinel forces the first build.
     std::uint32_t lastLevelGeneration_ = 0xFFFFFFFFu;
