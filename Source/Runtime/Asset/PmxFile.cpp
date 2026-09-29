@@ -745,6 +745,8 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         bone.inheritParentIndex = source.inheritParentIndex;
         bone.inheritInfluence = source.inheritInfluence;
 
+        bone.deformLayer = source.deformLayer;
+        bone.afterPhysics = (source.flags & PmxBoneFlags::PhysicsAfterDeform) != 0 ? 1u : 0u;
         bone.hasFixedAxis = (source.flags & PmxBoneFlags::FixedAxis) != 0 ? 1u : 0u;
         for (int axis = 0; axis < 3; ++axis)
         {

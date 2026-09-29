@@ -39,6 +39,12 @@ struct Bone
     // axis, so it can only twist around it (arm twist bones use it).
     bool hasFixedAxis = false;
     float fixedAxis[3] = { 0.0f, 0.0f, 0.0f };
+
+    // Evaluation order (PMX deform layer and PhysicsAfterDeform flag): IK and grants run over
+    // bones sorted by (afterPhysics, deformLayer, index); after-physics bones are evaluated in a
+    // second pass once the rigid-body simulation has moved the bones it drives.
+    std::int32_t deformLayer = 0;
+    bool afterPhysics = false;
 };
 
 // One link of an IK chain. PMX may constrain a link's local VMD rotation to an Euler-angle range;
@@ -67,12 +73,15 @@ struct IkChain
 
 // The static bone hierarchy of a model, kept alongside the mesh so skeleton evaluation can walk
 // it. `children` is parallel to `bones`: children[i] lists the indices of the bones whose parent
-// is i, in file order. `ikChains` holds the IK constraints the PMX declared.
+// is i, in file order. `ikChains` holds the IK constraints the PMX declared, sorted by their IK
+// bone's evaluation order. `deformOrder` lists every bone index sorted by (afterPhysics,
+// deformLayer, index); when it is empty (a hand-built skeleton), plain index order is used.
 struct Skeleton
 {
     std::vector<Bone> bones;
     std::vector<std::vector<std::uint16_t>> children;
     std::vector<IkChain> ikChains;
+    std::vector<std::uint16_t> deformOrder;
 };
 
 // Per-vertex linear-blend-skinning data, parallel to MeshAsset::vertices. Up to four bone

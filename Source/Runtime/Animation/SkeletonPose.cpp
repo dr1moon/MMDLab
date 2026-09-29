@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <string_view>
+#include <tuple>
 
 namespace MmdLab
 {
@@ -103,6 +104,23 @@ DirectX::XMMATRIX BindRotation(const Bone& bone)
     basis.r[2] = z;
     basis.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
     return basis;
+}
+
+// Calls `visit(i)` for every bone evaluated in the given phase (before or after physics), in
+// deform order; a hand-built skeleton without a deform order uses plain index order.
+template <typename Visit>
+void ForEachBoneInPhase(const Skeleton& skeleton, const bool afterPhysics, Visit&& visit)
+{
+    const std::size_t count = skeleton.bones.size();
+    const bool ordered = skeleton.deformOrder.size() == count;
+    for (std::size_t k = 0; k < count; ++k)
+    {
+        const std::size_t i = ordered ? skeleton.deformOrder[k] : k;
+        if (skeleton.bones[i].afterPhysics == afterPhysics)
+        {
+            visit(i);
+        }
+    }
 }
 
 // Recomputes world matrices for `bone`'s descendants (skipping `skip`) after an IK solve changed
@@ -453,18 +471,24 @@ void SolveIkChain(const IkChain& chain, const Skeleton& skeleton, const BindPose
     }
 }
 
-// Solves the IK chains the asset declared, in declaration order. `ikEnabled` is parallel to
-// `skeleton.ikChains`; a null pointer solves every chain, otherwise a false entry skips that
-// chain. The link local transforms are rewritten so the later passes build on the solved pose.
+// Solves the IK chains of one phase (their IK bone's afterPhysics flag) in chain order, which
+// BuildDeformOrder sorts by deform layer. `ikEnabled` is parallel to `skeleton.ikChains`; a null
+// pointer solves every chain, otherwise a false entry skips that chain. The link local transforms
+// are rewritten so the later passes build on the solved pose.
 void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
     std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
-    const std::vector<bool>* ikEnabled)
+    const std::vector<bool>* ikEnabled, const bool afterPhysics)
 {
     ZoneScopedN("Animation.IK");
     std::vector<IkLinkState> states;
     for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
     {
         if (ikEnabled != nullptr && i < ikEnabled->size() && !(*ikEnabled)[i])
+        {
+            continue;
+        }
+        const std::uint16_t ikBone = skeleton.ikChains[i].ikBoneIndex;
+        if (ikBone < skeleton.bones.size() && skeleton.bones[ikBone].afterPhysics != afterPhysics)
         {
             continue;
         }
@@ -475,17 +499,18 @@ void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
 // Projects a bone's rotation onto its fixed axis (PMX FixedAxis / 軸制限). Twist bones may only
 // rotate around the limb's longitudinal axis, so the off-axis part of the VMD rotation is dropped.
 void ApplyFixedAxis(const Skeleton& skeleton, const BindPose& bindPose,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
+    const bool afterPhysics)
 {
     ZoneScopedN("Animation.FixedAxis");
     using namespace DirectX;
     const std::size_t count = skeleton.bones.size();
-    for (std::size_t i = 0; i < count; ++i)
+    ForEachBoneInPhase(skeleton, afterPhysics, [&](const std::size_t i)
     {
         const Bone& bone = skeleton.bones[i];
         if (!bone.hasFixedAxis)
         {
-            continue;
+            return;
         }
 
         const std::uint16_t parent = bone.parentIndex;
@@ -511,7 +536,7 @@ void ApplyFixedAxis(const Skeleton& skeleton, const BindPose& bindPose,
         const float vLen = XMVectorGetX(XMVector3Length(v));
         if (vLen < 1e-6f)
         {
-            continue; // Near-identity rotation; nothing to project.
+            return; // Near-identity rotation; nothing to project.
         }
         const XMVECTOR axis = v / vLen;
         const float angle = 2.0f * std::acos(std::clamp(XMVectorGetW(vmdQuat), -1.0f, 1.0f));
@@ -526,23 +551,24 @@ void ApplyFixedAxis(const Skeleton& skeleton, const BindPose& bindPose,
         newLocal.r[3] = ownPos;
         world[i] = XMMatrixMultiply(newLocal, parentWorld);
         PropagateWorld(skeleton, local, world, static_cast<std::uint16_t>(i), kInvalidBoneIndex);
-    }
+    });
 }
 
 // Applies the "付与" translation (移動付与): the bone's world position shifts by a fraction of the
 // inherit parent's VMD translation offset (its world position minus its bind head).
 void ApplyInheritTranslation(const Skeleton& skeleton,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
+    const bool afterPhysics)
 {
     ZoneScopedN("Animation.InheritTranslation");
     using namespace DirectX;
     const std::size_t count = skeleton.bones.size();
-    for (std::size_t i = 0; i < count; ++i)
+    ForEachBoneInPhase(skeleton, afterPhysics, [&](const std::size_t i)
     {
         const Bone& bone = skeleton.bones[i];
         if (!bone.hasInheritTranslation || bone.inheritParentIndex >= count)
         {
-            continue;
+            return;
         }
 
         const Bone& mainBone = skeleton.bones[bone.inheritParentIndex];
@@ -553,27 +579,28 @@ void ApplyInheritTranslation(const Skeleton& skeleton,
 
         world[i].r[3] = world[i].r[3] + mainVmdOffset * bone.inheritInfluence;
         PropagateWorld(skeleton, local, world, static_cast<std::uint16_t>(i), kInvalidBoneIndex);
-    }
+    });
 }
 
 // Applies the "付与" (grant) inheritance: each bone with the InheritRotation flag rotates by a
 // scaled copy of its inherit-parent's VMD rotation (influence in 0..1, or negative for the
 // inverse). Deform ("D") shadow bones copy the animation bone's rotation this way, and the arm
-// twist bones split one twist across 0.25/0.5/0.75. Runs in index order so a deform bone's
-// parent has already received its own grant.
+// twist bones split one twist across 0.25/0.5/0.75. Runs in deform order (layer, then index) so
+// a deform bone's parent and inherit source have already received their own grants.
 void ApplyInheritRotation(const Skeleton& skeleton, const BindPose& bindPose,
-    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world)
+    const std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
+    const bool afterPhysics)
 {
     ZoneScopedN("Animation.InheritRotation");
     using namespace DirectX;
 
     const std::size_t count = skeleton.bones.size();
-    for (std::size_t i = 0; i < count; ++i)
+    ForEachBoneInPhase(skeleton, afterPhysics, [&](const std::size_t i)
     {
         const Bone& bone = skeleton.bones[i];
         if (!bone.hasInheritRotation || bone.inheritParentIndex >= count)
         {
-            continue;
+            return;
         }
 
         // The inherit parent's VMD rotation: its local rotation (relative to its parent) with
@@ -614,7 +641,7 @@ void ApplyInheritRotation(const Skeleton& skeleton, const BindPose& bindPose,
             : XMMatrixIdentity();
         world[i] = XMMatrixMultiply(newLocal, parentWorld);
         PropagateWorld(skeleton, local, world, static_cast<std::uint16_t>(i), kInvalidBoneIndex);
-    }
+    });
 }
 } // namespace
 
@@ -656,11 +683,45 @@ BindPose BuildBindPose(const Skeleton& skeleton)
     return bind;
 }
 
+void BuildDeformOrder(Skeleton& skeleton)
+{
+    const std::size_t count = skeleton.bones.size();
+    const auto key = [&](const std::size_t i)
+    {
+        const Bone& bone = skeleton.bones[i];
+        return std::tuple(bone.afterPhysics, bone.deformLayer, i);
+    };
+    skeleton.deformOrder.resize(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        skeleton.deformOrder[i] = static_cast<std::uint16_t>(i);
+    }
+    std::sort(skeleton.deformOrder.begin(), skeleton.deformOrder.end(),
+        [&](const std::uint16_t a, const std::uint16_t b) { return key(a) < key(b); });
+    std::stable_sort(skeleton.ikChains.begin(), skeleton.ikChains.end(),
+        [&](const IkChain& a, const IkChain& b)
+        {
+            return a.ikBoneIndex < count && b.ikBoneIndex < count && key(a.ikBoneIndex) < key(b.ikBoneIndex);
+        });
+}
+
 void EvaluateBoneWorld(
     const Skeleton& skeleton,
     const BindPose& bindPose,
     const BonePose* motionPose,
     std::vector<DirectX::XMMATRIX>& outWorld,
+    const std::vector<bool>* ikEnabled)
+{
+    std::vector<DirectX::XMMATRIX> local;
+    EvaluateBoneWorld(skeleton, bindPose, motionPose, outWorld, local, ikEnabled);
+}
+
+void EvaluateBoneWorld(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const BonePose* motionPose,
+    std::vector<DirectX::XMMATRIX>& outWorld,
+    std::vector<DirectX::XMMATRIX>& outLocal,
     const std::vector<bool>* ikEnabled)
 {
     ZoneScopedN("Animation.EvaluateBoneWorld");
@@ -674,7 +735,8 @@ void EvaluateBoneWorld(
 
     // Load the per-bone local transforms (motion or bind) so the IK pass can re-propagate
     // descendants from them after adjusting a chain.
-    std::vector<XMMATRIX> local(count);
+    std::vector<XMMATRIX>& local = outLocal;
+    local.resize(count);
     {
         ZoneScopedN("Animation.Evaluate.LoadLocalPose");
         for (std::size_t i = 0; i < count; ++i)
@@ -701,14 +763,46 @@ void EvaluateBoneWorld(
     // Solve the IK chains on top of the animated pose (the bind pose needs no solving).
     if (hasMotion)
     {
-        SolveIk(skeleton, bindPose, local, scratchWorld, ikEnabled);
+        SolveIk(skeleton, bindPose, local, scratchWorld, ikEnabled, false);
     }
 
     // Apply the per-bone constraints and "付与" grants. Axis constraints run first so the
     // rotation grants copy the already-constrained twist rotation; translation grants follow.
-    ApplyFixedAxis(skeleton, bindPose, local, scratchWorld);
-    ApplyInheritTranslation(skeleton, local, scratchWorld);
-    ApplyInheritRotation(skeleton, bindPose, local, scratchWorld);
+    ApplyFixedAxis(skeleton, bindPose, local, scratchWorld, false);
+    ApplyInheritTranslation(skeleton, local, scratchWorld, false);
+    ApplyInheritRotation(skeleton, bindPose, local, scratchWorld, false);
+}
+
+void EvaluateBoneWorldAfterPhysics(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& local,
+    std::vector<DirectX::XMMATRIX>& world,
+    const std::vector<bool>* ikEnabled)
+{
+    using namespace DirectX;
+    const std::size_t count = skeleton.bones.size();
+    if (world.size() != count || local.size() != count
+        || std::none_of(skeleton.bones.begin(), skeleton.bones.end(), [](const Bone& bone) { return bone.afterPhysics; }))
+    {
+        return;
+    }
+    ZoneScopedN("Animation.EvaluateBoneWorldAfterPhysics");
+
+    // Re-run forward kinematics for the after-physics bones on top of their final parents (which
+    // physics may have moved), parents first, then their chains, constraints, and grants. IK
+    // rewrites link locals, so it works on a copy.
+    std::vector<XMMATRIX> phaseLocal = local;
+    ForEachBoneInPhase(skeleton, true, [&](const std::size_t i)
+    {
+        const std::uint16_t parent = skeleton.bones[i].parentIndex;
+        world[i] = parent < count ? XMMatrixMultiply(local[i], world[parent]) : local[i];
+        PropagateWorld(skeleton, local, world, static_cast<std::uint16_t>(i), kInvalidBoneIndex);
+    });
+    SolveIk(skeleton, bindPose, phaseLocal, world, ikEnabled, true);
+    ApplyFixedAxis(skeleton, bindPose, phaseLocal, world, true);
+    ApplyInheritTranslation(skeleton, phaseLocal, world, true);
+    ApplyInheritRotation(skeleton, bindPose, phaseLocal, world, true);
 }
 
 void BuildSkinningPalette(

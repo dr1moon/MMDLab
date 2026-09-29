@@ -72,6 +72,8 @@ MmdLab::MmdlMeshData MakeTestMesh()
     child.inheritInfluence = 0.5f;
     child.hasFixedAxis = 1u;
     child.fixedAxis[0] = 1.0f;
+    child.deformLayer = 2;
+    child.afterPhysics = 1u;
 
     root.ikTargetIndex = 1; // root drives an IK chain targeting the child.
     root.ikLoopCount = 40;
@@ -180,6 +182,8 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
         MMDLAB_CHECK_EQUAL(expected.bones[i].inheritParentIndex, actual.bones[i].inheritParentIndex);
         MMDLAB_CHECK_EQUAL(expected.bones[i].inheritInfluence, actual.bones[i].inheritInfluence);
         MMDLAB_CHECK_EQUAL(expected.bones[i].hasFixedAxis, actual.bones[i].hasFixedAxis);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].deformLayer, actual.bones[i].deformLayer);
+        MMDLAB_CHECK_EQUAL(expected.bones[i].afterPhysics, actual.bones[i].afterPhysics);
         MMDLAB_CHECK_EQUAL(expected.bones[i].ikTargetIndex, actual.bones[i].ikTargetIndex);
         MMDLAB_CHECK_EQUAL(expected.bones[i].ikLoopCount, actual.bones[i].ikLoopCount);
         MMDLAB_CHECK_EQUAL(expected.bones[i].ikLimitAngle, actual.bones[i].ikLimitAngle);

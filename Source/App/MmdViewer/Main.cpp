@@ -221,6 +221,7 @@ int wmain(const int argc, wchar_t* argv[])
             frame.morphDeltaOffsetSnapshot.assign(models.size() + 1, 0);
             std::vector<DirectX::XMFLOAT4X4> palette;
             std::vector<DirectX::XMMATRIX> worldScratch;
+            std::vector<DirectX::XMMATRIX> localScratch;
             std::vector<float> morphWeights;
             std::vector<float> resolvedWeights;
             std::vector<float> morphDelta;
@@ -241,11 +242,12 @@ int wmain(const int argc, wchar_t* argv[])
                     world.Animator().SampleMorphWeights(model.morphs, morphWeights);
                     MmdLab::ResolveMorphWeights(model.morphs, morphWeights, resolvedWeights);
                     MmdLab::ApplyBoneMorphs(model.morphs, resolvedWeights, motionPose);
-                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, &motionPose, worldScratch, &ikEnabled);
+                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, &motionPose, worldScratch, localScratch, &ikEnabled);
                 }
                 else
                 {
-                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, worldScratch);
+                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, worldScratch, localScratch);
+                    ikEnabled.clear();
                     resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
                 }
 
@@ -259,6 +261,9 @@ int wmain(const int argc, wchar_t* argv[])
                     }
                     physics->Simulate(deltaTime, worldScratch);
                 }
+                // PMX PhysicsAfterDeform bones (and their IK and grants) follow the simulation.
+                MmdLab::EvaluateBoneWorldAfterPhysics(model.skeleton, model.bindPose, localScratch, worldScratch,
+                    ikEnabled.empty() ? nullptr : &ikEnabled);
                 MmdLab::BuildSkinningPalette(model.bindPose, worldScratch, palette);
 
                 // Accumulate active vertex morphs into a dense per-vertex position delta (all

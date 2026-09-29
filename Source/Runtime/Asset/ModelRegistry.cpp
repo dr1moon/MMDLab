@@ -43,6 +43,8 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         bone.inheritParentIndex = source.inheritParentIndex;
         bone.inheritInfluence = source.inheritInfluence;
         bone.hasFixedAxis = source.hasFixedAxis != 0;
+        bone.deformLayer = source.deformLayer;
+        bone.afterPhysics = source.afterPhysics != 0;
         model.skeleton.bones.push_back(std::move(bone));
     }
 
@@ -84,6 +86,7 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         }
         model.skeleton.ikChains.push_back(std::move(chain));
     }
+    BuildDeformOrder(model.skeleton);
 
     // Skinning arrives already remapped to submesh-local u8 indices by the cooker.
     model.skinning.reserve(meshData.skinning.size());

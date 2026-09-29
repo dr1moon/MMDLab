@@ -39,14 +39,41 @@ struct BonePose
 // local frame.
 [[nodiscard]] BindPose BuildBindPose(const Skeleton& skeleton);
 
+// Fills `skeleton.deformOrder` and stably sorts `skeleton.ikChains` by their IK bone's
+// (afterPhysics, deformLayer, index), the order MMD evaluates deform layers in. Call once after
+// the bones and chains are built, before sampling IK state (which is parallel to ikChains).
+void BuildDeformOrder(Skeleton& skeleton);
+
 // Evaluates every bone's model-space world transform: forward kinematics over `motionPose` (null
-// for the bind pose), then IK, axis constraints, and "付与" grants. This is the pose physics reads
-// before it overrides the simulated bones. `ikEnabled` is as in EvaluateSkeletonPose.
+// for the bind pose), then IK, axis constraints, and "付与" grants for the bones evaluated before
+// physics, in deform order. This is the pose physics reads before it overrides the simulated
+// bones. `outLocal` receives the per-bone local transforms that EvaluateBoneWorldAfterPhysics
+// builds on. `ikEnabled` is as in EvaluateSkeletonPose.
 void EvaluateBoneWorld(
     const Skeleton& skeleton,
     const BindPose& bindPose,
     const BonePose* motionPose,
     std::vector<DirectX::XMMATRIX>& outWorld,
+    std::vector<DirectX::XMMATRIX>& outLocal,
+    const std::vector<bool>* ikEnabled = nullptr);
+
+// As above, for callers that never run the after-physics pass.
+void EvaluateBoneWorld(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const BonePose* motionPose,
+    std::vector<DirectX::XMMATRIX>& outWorld,
+    const std::vector<bool>* ikEnabled = nullptr);
+
+// The second evaluation pass, after physics has rewritten the simulated bones in `world`: every
+// PMX PhysicsAfterDeform bone is re-evaluated from `local` on top of its final parent, then the
+// after-physics IK chains, axis constraints, and grants run, so those bones follow the
+// simulation. A no-op for a skeleton without such bones.
+void EvaluateBoneWorldAfterPhysics(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& local,
+    std::vector<DirectX::XMMATRIX>& world,
     const std::vector<bool>* ikEnabled = nullptr);
 
 // Builds the skinning palette (inverseBind_i * world_i) from final world transforms.

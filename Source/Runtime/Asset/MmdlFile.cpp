@@ -289,6 +289,8 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
             bone.inheritInfluence = reader.ReadF32();
             bone.hasFixedAxis = reader.ReadU32();
             for (float& value : bone.fixedAxis) { value = reader.ReadF32(); }
+            bone.deformLayer = reader.ReadI32();
+            bone.afterPhysics = reader.ReadU32();
             bone.ikTargetIndex = reader.ReadU16();
             bone.ikLoopCount = reader.ReadI32();
             bone.ikLimitAngle = reader.ReadF32();

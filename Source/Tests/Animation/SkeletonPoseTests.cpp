@@ -463,3 +463,98 @@ MMDLAB_TEST(Animation.SkeletonPose, IkWithoutLimitStillReachesTarget)
     const std::vector<XMMATRIX> world = SolveLeg(leg, MakeLegMotion(leg, target));
     MMDLAB_CHECK(Distance(world[3].r[3], target) < 1e-2f);
 }
+
+namespace
+{
+// Three root bones at the origin pointing +Y: a source animated by `rotation`, and two grant
+// bones that each copy the rotation of the bone named by `inheritFrom` (influence 1).
+struct GrantRig
+{
+    MmdLab::Skeleton skeleton;
+    MmdLab::BindPose bind;
+};
+
+GrantRig MakeGrantRig(const std::uint16_t firstInheritsFrom, const std::uint16_t secondInheritsFrom,
+    const std::int32_t firstLayer, const bool secondAfterPhysics)
+{
+    GrantRig rig;
+    for (int i = 0; i < 3; ++i)
+    {
+        MmdLab::Bone bone;
+        bone.name = i == 0 ? "grantA" : (i == 1 ? "grantB" : "source");
+        bone.tail[1] = 1.0f;
+        rig.skeleton.bones.push_back(std::move(bone));
+    }
+    rig.skeleton.bones[0].hasInheritRotation = true;
+    rig.skeleton.bones[0].inheritParentIndex = firstInheritsFrom;
+    rig.skeleton.bones[0].inheritInfluence = 1.0f;
+    rig.skeleton.bones[0].deformLayer = firstLayer;
+    rig.skeleton.bones[1].hasInheritRotation = true;
+    rig.skeleton.bones[1].inheritParentIndex = secondInheritsFrom;
+    rig.skeleton.bones[1].inheritInfluence = 1.0f;
+    rig.skeleton.bones[1].afterPhysics = secondAfterPhysics;
+    rig.skeleton.children.resize(3);
+    MmdLab::BuildDeformOrder(rig.skeleton);
+    rig.bind = MmdLab::BuildBindPose(rig.skeleton);
+    return rig;
+}
+
+MmdLab::BonePose PoseSource(const GrantRig& rig, const DirectX::XMMATRIX& rotation)
+{
+    MmdLab::BonePose motion;
+    motion.local.assign(rig.bind.localBind.begin(), rig.bind.localBind.end());
+    DirectX::XMStoreFloat4x4(&motion.local[2], DirectX::XMMatrixMultiply(
+        DirectX::XMLoadFloat4x4(&rig.bind.bindRotation[2]), rotation));
+    return motion;
+}
+
+// The model-space +Y direction of a bone's world transform (its bind +Y is the model +Y here).
+DirectX::XMVECTOR BoneUp(const DirectX::XMMATRIX& world)
+{
+    return DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(
+        DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f),
+        world));
+}
+} // namespace
+
+MMDLAB_TEST(Animation.SkeletonPose, HigherDeformLayerGrantsAfterItsSource)
+{
+    using namespace DirectX;
+    // grantA (index 0) copies grantB (index 1), which copies the source. In index order grantA
+    // would read grantB before grantB received its grant; on deform layer 1 it runs after it.
+    const XMMATRIX rotation = XMMatrixRotationZ(XM_PIDIV2);
+    for (const std::int32_t layer : { 0, 1 })
+    {
+        const GrantRig rig = MakeGrantRig(1, 2, layer, false);
+        const MmdLab::BonePose motion = PoseSource(rig, rotation);
+        std::vector<XMMATRIX> world;
+        MmdLab::EvaluateBoneWorld(rig.skeleton, rig.bind, &motion, world);
+
+        const XMVECTOR expected = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), rotation);
+        const float grantAError = XMVectorGetX(XMVector3Length(BoneUp(world[0]) - expected));
+        MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[1]) - expected)) < 1e-4f);
+        MMDLAB_CHECK(layer == 1 ? grantAError < 1e-4f : grantAError > 0.5f);
+    }
+}
+
+MMDLAB_TEST(Animation.SkeletonPose, AfterPhysicsGrantFollowsTheSimulatedSource)
+{
+    using namespace DirectX;
+    // grantB is PhysicsAfterDeform and copies the source. Physics then turns the source a further
+    // 90 degrees: only the after-physics pass lets grantB pick that up.
+    const GrantRig rig = MakeGrantRig(2, 2, 0, true);
+    const MmdLab::BonePose motion = PoseSource(rig, XMMatrixIdentity());
+    std::vector<XMMATRIX> world;
+    std::vector<XMMATRIX> local;
+    MmdLab::EvaluateBoneWorld(rig.skeleton, rig.bind, &motion, world, local);
+
+    const XMMATRIX simulated = XMMatrixRotationX(XM_PIDIV2);
+    world[2] = XMMatrixMultiply(world[2], simulated); // What PhysicsScene would write back.
+    const XMVECTOR expected = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), simulated);
+    MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[1]) - expected)) > 0.5f);
+
+    MmdLab::EvaluateBoneWorldAfterPhysics(rig.skeleton, rig.bind, local, world);
+    MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[1]) - expected)) < 1e-4f);
+    // grantA inherits too but is evaluated before physics, so it keeps the animated source.
+    MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[0]) - XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f))) < 1e-4f);
+}

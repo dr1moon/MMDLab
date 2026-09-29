@@ -17,7 +17,7 @@ namespace MmdLab
 // no pointers, raw C++ containers, or compiler-dependent enums.
 
 inline constexpr std::uint32_t MmdlMagic = 0x4C444D4D; // "MMDL".
-inline constexpr std::uint32_t MmdlVersion = 10;
+inline constexpr std::uint32_t MmdlVersion = 11;
 
 enum class MmdlChunkType : std::uint32_t
 {
@@ -114,6 +114,10 @@ struct MmdlBone
     // Axis constraint (PMX FixedAxis).
     std::uint32_t hasFixedAxis; // 0 or 1.
     float fixedAxis[3];
+
+    // Evaluation order: PMX deform layer and PhysicsAfterDeform flag.
+    std::int32_t deformLayer = 0;
+    std::uint32_t afterPhysics = 0; // 0 or 1.
 
     // IK: kInvalidBoneIndex when this bone is not an IK bone; otherwise the chain it drives.
     std::uint16_t ikTargetIndex = kInvalidBoneIndex;

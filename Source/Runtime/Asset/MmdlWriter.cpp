@@ -164,6 +164,8 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
         {
             skeleton.F32(value);
         }
+        skeleton.I32(bone.deformLayer);
+        skeleton.U32(bone.afterPhysics);
         skeleton.U16(bone.ikTargetIndex);
         skeleton.I32(bone.ikLoopCount);
         skeleton.F32(bone.ikLimitAngle);
