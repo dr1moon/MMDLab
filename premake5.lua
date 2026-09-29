@@ -77,6 +77,19 @@ project "Tracy"
         "Source/ThirdParty/tracy/TracyClient.cpp",
     }
 
+-- Bullet Physics 3.25 (zlib license, Source/ThirdParty/bullet/LICENSE.txt): only the
+-- LinearMath, BulletCollision, and BulletDynamics libraries the rigid-body simulation needs.
+project "Bullet"
+    ConfigureCppProject()
+    kind "StaticLib"
+    warnings "Off"
+    includedirs { "Source/ThirdParty/bullet" }
+    files {
+        "Source/ThirdParty/bullet/LinearMath/**.cpp",
+        "Source/ThirdParty/bullet/BulletCollision/**.cpp",
+        "Source/ThirdParty/bullet/BulletDynamics/**.cpp",
+    }
+
 project "MmdCore"
     ConfigureCppProject()
     kind "StaticLib"
@@ -84,7 +97,9 @@ project "MmdCore"
         "Source/ThirdParty/imgui",
         "Source/ThirdParty/imgui/backends",
     }
-    links { "ImGui", "Tracy" }
+    -- Bullet's headers are external so the project's /W4 does not apply to them.
+    externalincludedirs { "Source/ThirdParty/bullet" }
+    links { "ImGui", "Tracy", "Bullet" }
     files {
         "Source/Runtime/**.h",
         "Source/Runtime/**.hpp",
@@ -122,7 +137,7 @@ project "MmdViewer"
         "Source/App/MmdViewer/**.hpp",
         "Source/App/MmdViewer/**.cpp",
     }
-    links { "MmdCore", "ImGui", "Tracy", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
+    links { "MmdCore", "ImGui", "Tracy", "Bullet", "user32", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
 
 project "MmdCooker"
     ConfigureCppProject()
@@ -132,7 +147,7 @@ project "MmdCooker"
         "Source/Tools/MmdCooker/**.hpp",
         "Source/Tools/MmdCooker/**.cpp",
     }
-    links { "MmdCookLib", "MmdCore", "Tracy" }
+    links { "MmdCookLib", "MmdCore", "Tracy", "Bullet" }
 
 project "MmdTests"
     ConfigureCppProject()
@@ -142,4 +157,4 @@ project "MmdTests"
         "Source/Tests/**.hpp",
         "Source/Tests/**.cpp",
     }
-    links { "MmdCore", "MmdCookLib", "Tracy", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
+    links { "MmdCore", "MmdCookLib", "Tracy", "Bullet", "d3d12", "dxgi", "dxguid", "d3dcompiler" }
