@@ -67,6 +67,32 @@ btVector3 ToBullet(const float (&values)[3])
 {
     return btVector3(values[0], values[1], values[2]);
 }
+
+// The ground plane's collision group: above the sixteen PMX groups, so no PMX mask names it.
+constexpr int kGroundGroup = 1 << 16;
+
+// Broadphase pair filter. The ground collides with every simulated body whatever its PMX mask
+// (as in MMD); two static or kinematic bodies never pair, since neither can respond (Bullet
+// would otherwise narrowphase them and warn); every other pair uses the PMX group/mask test in
+// both directions.
+struct PmxOverlapFilter final : btOverlapFilterCallback
+{
+    bool needBroadphaseCollision(btBroadphaseProxy* proxyA, btBroadphaseProxy* proxyB) const override
+    {
+        const auto* objectA = static_cast<const btCollisionObject*>(proxyA->m_clientObject);
+        const auto* objectB = static_cast<const btCollisionObject*>(proxyB->m_clientObject);
+        if (objectA->isStaticOrKinematicObject() && objectB->isStaticOrKinematicObject())
+        {
+            return false;
+        }
+        if (((proxyA->m_collisionFilterGroup | proxyB->m_collisionFilterGroup) & kGroundGroup) != 0)
+        {
+            return true;
+        }
+        return (proxyA->m_collisionFilterGroup & proxyB->m_collisionFilterMask) != 0
+            && (proxyB->m_collisionFilterGroup & proxyA->m_collisionFilterMask) != 0;
+    }
+};
 } // namespace
 
 struct PhysicsScene::Impl
@@ -90,6 +116,10 @@ struct PhysicsScene::Impl
     std::unique_ptr<btDiscreteDynamicsWorld> world;
     std::vector<Body> bodies;
     std::vector<std::unique_ptr<btGeneric6DofSpringConstraint>> constraints;
+    PmxOverlapFilter overlapFilter;
+    std::unique_ptr<btStaticPlaneShape> groundShape;
+    std::unique_ptr<btRigidBody> ground;
+    bool groundEnabled = false;
 
     // Bones in parent-before-child order, the simulated body driving each bone (or -1), and
     // whether a bone is simulated or descends from a simulated bone.
@@ -114,6 +144,10 @@ struct PhysicsScene::Impl
         {
             world->removeRigidBody(body.rigidBody.get());
         }
+        if (groundEnabled)
+        {
+            world->removeRigidBody(ground.get());
+        }
     }
 
     DirectX::XMMATRIX BoneWorld(const std::vector<DirectX::XMMATRIX>& poses, const std::uint16_t bone) const
@@ -136,6 +170,12 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
     impl.world = std::make_unique<btDiscreteDynamicsWorld>(
         impl.dispatcher.get(), impl.broadphase.get(), impl.solver.get(), impl.configuration.get());
     impl.world->setGravity(btVector3(0.0f, kGravity, 0.0f));
+    impl.world->getPairCache()->setOverlapFilterCallback(&impl.overlapFilter);
+
+    // The floor at y = 0 (MMD's ground), so cloth and hair do not sink through it.
+    impl.groundShape = std::make_unique<btStaticPlaneShape>(btVector3(0.0f, 1.0f, 0.0f), 0.0f);
+    impl.ground = std::make_unique<btRigidBody>(
+        btRigidBody::btRigidBodyConstructionInfo(0.0f, nullptr, impl.groundShape.get()));
 
     const std::size_t boneCount = skeleton.bones.size();
     impl.bodies.reserve(asset.bodies.size());
@@ -177,8 +217,7 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
         body.rigidBody->setActivationState(DISABLE_DEACTIVATION);
         body.rigidBody->setSleepingThresholds(0.01f, XMConvertToRadians(0.1f));
 
-        // PMX: bit g of the mask set = collides with group g. Bullet's default filter requires
-        // each body's group to be in the other's mask, which is the same symmetric test.
+        // PMX: bit g of the mask set = collides with group g; PmxOverlapFilter tests it both ways.
         impl.world->addRigidBody(body.rigidBody.get(),
             static_cast<int>(1u << setup.group), static_cast<int>(setup.collisionMask));
         impl.bodies.push_back(std::move(body));
@@ -261,9 +300,33 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
         impl.affected[bone] = impl.boneBody[bone] >= 0 || (parent < boneCount && impl.affected[parent]);
     }
     impl.relative.resize(boneCount);
+    SetGroundEnabled(true);
 }
 
 PhysicsScene::~PhysicsScene() = default;
+
+void PhysicsScene::SetGroundEnabled(const bool enabled)
+{
+    Impl& impl = *impl_;
+    if (enabled == impl.groundEnabled)
+    {
+        return;
+    }
+    if (enabled)
+    {
+        impl.world->addRigidBody(impl.ground.get(), kGroundGroup, 0);
+    }
+    else
+    {
+        impl.world->removeRigidBody(impl.ground.get());
+    }
+    impl.groundEnabled = enabled;
+}
+
+bool PhysicsScene::GroundEnabled() const
+{
+    return impl_->groundEnabled;
+}
 
 std::size_t PhysicsScene::BodyCount() const
 {

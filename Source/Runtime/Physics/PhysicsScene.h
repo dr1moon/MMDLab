@@ -33,6 +33,10 @@ public:
 
     [[nodiscard]] std::size_t BodyCount() const;
 
+    // The static floor plane at y = 0 that every simulated body collides with (on by default).
+    void SetGroundEnabled(bool enabled);
+    [[nodiscard]] bool GroundEnabled() const;
+
     // Teleports every body to its bone in `world` with zero velocity. Call when the pose jumps
     // (a new motion, a seek) so the simulation does not see a huge velocity and explode. The
     // first Simulate also resets.

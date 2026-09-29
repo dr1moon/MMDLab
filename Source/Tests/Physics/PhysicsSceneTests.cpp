@@ -97,6 +97,7 @@ MMDLAB_TEST(Physics.Scene, SimulatedBodyFallsAndDrivesItsBoneAndChildren)
     MmdLab::BodySetup body = MakeSphere(1, MmdLab::BodyMode::Physics, 7.0f);
     asset.bodies = { body };
     MmdLab::PhysicsScene scene(asset, skeleton, bind);
+    scene.SetGroundEnabled(false);
 
     // Free fall with MMD gravity (98 units/s^2) for 0.5 s: about 12.25 units down, less a little
     // for Bullet's default damping-free integration error.
@@ -150,6 +151,7 @@ MMDLAB_TEST(Physics.Scene, CollisionMaskDecidesWhetherBodiesCollide)
         ball.collisionMask = sphereMask;
         asset.bodies = { floor, ball };
         MmdLab::PhysicsScene scene(asset, skeleton, bind);
+        scene.SetGroundEnabled(false);
         (void)Run(scene, skeleton, bind, 1.5f);
         return WorldY(scene.BodyWorld(1));
     };
@@ -186,9 +188,46 @@ MMDLAB_TEST(Physics.Scene, BonePositionModeKeepsTheAnimatedPosition)
     MmdLab::PhysicsAsset asset;
     asset.bodies = { MakeSphere(1, MmdLab::BodyMode::PhysicsWithBonePosition, 7.0f) };
     MmdLab::PhysicsScene scene(asset, skeleton, bind);
+    scene.SetGroundEnabled(false);
 
     // The body falls away, but the bone only takes its rotation (none here), so it stays put.
     const std::vector<XMMATRIX> world = Run(scene, skeleton, bind, 0.5f);
     MMDLAB_CHECK(WorldY(scene.BodyWorld(0)) < 0.0f);
     MMDLAB_CHECK(std::fabs(WorldY(world[1]) - 8.0f) < 1e-4f);
+}
+
+MMDLAB_TEST(Physics.Scene, GroundCatchesBodiesWhateverTheirMask)
+{
+    const MmdLab::Skeleton skeleton = MakeHangingChain();
+    const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
+    MmdLab::PhysicsAsset asset;
+    asset.bodies = { MakeSphere(1, MmdLab::BodyMode::Physics, 3.0f) }; // Mask 0: collides with no group.
+
+    MmdLab::PhysicsScene scene(asset, skeleton, bind);
+    MMDLAB_CHECK(scene.GroundEnabled());
+    (void)Run(scene, skeleton, bind, 1.5f);
+    MMDLAB_CHECK(std::fabs(WorldY(scene.BodyWorld(0)) - 0.5f) < 0.1f); // Resting at its radius.
+
+    MmdLab::PhysicsScene noGround(asset, skeleton, bind);
+    noGround.SetGroundEnabled(false);
+    (void)Run(noGround, skeleton, bind, 1.5f);
+    MMDLAB_CHECK(WorldY(noGround.BodyWorld(0)) < -50.0f);
+}
+
+MMDLAB_TEST(Physics.Scene, KinematicBodiesUnderTheGroundDoNotCollideWithIt)
+{
+    // A follow-bone body at y = 0 overlaps the ground and another follow-bone body; neither pair
+    // can respond, so they are filtered out and the body keeps tracking its bone exactly.
+    const MmdLab::Skeleton skeleton = MakeHangingChain();
+    const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
+    MmdLab::PhysicsAsset asset;
+    MmdLab::BodySetup a = MakeSphere(0, MmdLab::BodyMode::FollowBone, 0.0f);
+    a.collisionMask = 0xFFFF;
+    MmdLab::BodySetup b = a;
+    b.boneIndex = 1;
+    asset.bodies = { a, b };
+    MmdLab::PhysicsScene scene(asset, skeleton, bind);
+    (void)Run(scene, skeleton, bind, 0.5f);
+    MMDLAB_CHECK(std::fabs(WorldY(scene.BodyWorld(0))) < 1e-4f);
+    MMDLAB_CHECK(std::fabs(WorldY(scene.BodyWorld(1))) < 1e-4f);
 }
