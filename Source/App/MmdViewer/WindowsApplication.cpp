@@ -79,15 +79,6 @@ bool WindowsApplication::ProcessMessages()
 
         TranslateMessage(&message);
         DispatchMessageW(&message);
-
-        // Forward the raw message to the RhiThread's imgui input queue (dropped if full).
-        if (inputSink_ != nullptr)
-        {
-            inputSink_->TryPush(Win32InputMessage{
-                static_cast<std::uint32_t>(message.message),
-                static_cast<std::uintptr_t>(message.wParam),
-                static_cast<std::intptr_t>(message.lParam) });
-        }
     }
     return true;
 }
@@ -102,6 +93,20 @@ LRESULT CALLBACK WindowsApplication::WindowProcedure(
     {
         const auto* createStructure = reinterpret_cast<const CREATESTRUCTW*>(longParameter);
         SetWindowLongPtrW(windowHandle, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(createStructure->lpCreateParams));
+    }
+
+    // Forward every message to the RhiThread's imgui input queue (dropped if full). This runs in
+    // the window procedure rather than the PeekMessage loop because sent messages (WM_SIZE, and
+    // the WM_SIZE burst of a live resize drag) reach the window procedure directly and never
+    // pass through the queue; forwarding only queued messages left the swap chain and imgui at
+    // the startup size.
+    auto* application = reinterpret_cast<WindowsApplication*>(GetWindowLongPtrW(windowHandle, GWLP_USERDATA));
+    if (application != nullptr && application->inputSink_ != nullptr)
+    {
+        application->inputSink_->TryPush(Win32InputMessage{
+            static_cast<std::uint32_t>(message),
+            static_cast<std::uintptr_t>(wordParameter),
+            static_cast<std::intptr_t>(longParameter) });
     }
 
     switch (message)

@@ -154,24 +154,29 @@ uint32_t RhiThread::Run()
                 static_cast<WPARAM>(message->wordParameter),
                 static_cast<LPARAM>(message->longParameter));
 
-            if (message->message == WM_SIZE)
+        }
+
+        // Match the swap chain to the window's current client area once per frame. Reading the
+        // client rectangle, rather than replaying each forwarded WM_SIZE, coalesces a resize
+        // drag into one resize per frame and cannot miss the final size if the input queue
+        // dropped messages. imgui reads the same rectangle in ImGui_ImplWin32_NewFrame, so its
+        // display size and the back buffers always agree.
+        RECT clientRect{};
+        GetClientRect(window_, &clientRect);
+        const std::uint32_t clientWidth = static_cast<std::uint32_t>(clientRect.right - clientRect.left);
+        const std::uint32_t clientHeight = static_cast<std::uint32_t>(clientRect.bottom - clientRect.top);
+        minimized_ = IsIconic(window_) || clientWidth == 0 || clientHeight == 0;
+        if (!minimized_ && !renderFailed)
+        {
+            try
             {
-                const std::uint32_t width = LOWORD(message->longParameter);
-                const std::uint32_t height = HIWORD(message->longParameter);
-                minimized_ = width == 0 || height == 0;
-                if (!minimized_ && !renderFailed)
-                {
-                    try
-                    {
-                        renderer_->Resize(width, height);
-                    }
-                    catch (const std::exception& exception)
-                    {
-                        LogError("RhiThread", std::format("resize failed: {}", exception.what()));
-                        renderFailed = true;
-                        PostMessageW(window_, WM_CLOSE, 0, 0);
-                    }
-                }
+                renderer_->Resize(clientWidth, clientHeight);
+            }
+            catch (const std::exception& exception)
+            {
+                LogError("RhiThread", std::format("resize failed: {}", exception.what()));
+                renderFailed = true;
+                PostMessageW(window_, WM_CLOSE, 0, 0);
             }
         }
 
