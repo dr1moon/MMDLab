@@ -656,19 +656,18 @@ BindPose BuildBindPose(const Skeleton& skeleton)
     return bind;
 }
 
-void EvaluateSkeletonPose(
+void EvaluateBoneWorld(
     const Skeleton& skeleton,
     const BindPose& bindPose,
     const BonePose* motionPose,
-    std::vector<DirectX::XMFLOAT4X4>& outPalette,
-    std::vector<DirectX::XMMATRIX>& scratchWorld,
+    std::vector<DirectX::XMMATRIX>& outWorld,
     const std::vector<bool>* ikEnabled)
 {
-    ZoneScopedN("Animation.EvaluateSkeletonPose");
+    ZoneScopedN("Animation.EvaluateBoneWorld");
     using namespace DirectX;
 
     const std::size_t count = skeleton.bones.size();
-    outPalette.resize(count);
+    std::vector<XMMATRIX>& scratchWorld = outWorld;
     scratchWorld.resize(count);
 
     const bool hasMotion = motionPose != nullptr && motionPose->local.size() == count;
@@ -710,16 +709,35 @@ void EvaluateSkeletonPose(
     ApplyFixedAxis(skeleton, bindPose, local, scratchWorld);
     ApplyInheritTranslation(skeleton, local, scratchWorld);
     ApplyInheritRotation(skeleton, bindPose, local, scratchWorld);
+}
 
+void BuildSkinningPalette(
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& world,
+    std::vector<DirectX::XMFLOAT4X4>& outPalette)
+{
     // Skinning matrix = inverseBind * world: re-project the model-space vertex into the bone's
-    // bind space, then out through the (possibly IK-adjusted) animated world transform.
+    // bind space, then out through the (possibly IK- or physics-adjusted) world transform.
+    ZoneScopedN("Animation.BuildSkinningPalette");
+    using namespace DirectX;
+    outPalette.resize(world.size());
+    for (std::size_t i = 0; i < world.size(); ++i)
     {
-        ZoneScopedN("Animation.Evaluate.BuildSkinningPalette");
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const XMMATRIX inverseBind = XMLoadFloat4x4(&bindPose.inverseBind[i]);
-            XMStoreFloat4x4(&outPalette[i], XMMatrixMultiply(inverseBind, scratchWorld[i]));
-        }
+        const XMMATRIX inverseBind = XMLoadFloat4x4(&bindPose.inverseBind[i]);
+        XMStoreFloat4x4(&outPalette[i], XMMatrixMultiply(inverseBind, world[i]));
     }
+}
+
+void EvaluateSkeletonPose(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const BonePose* motionPose,
+    std::vector<DirectX::XMFLOAT4X4>& outPalette,
+    std::vector<DirectX::XMMATRIX>& scratchWorld,
+    const std::vector<bool>* ikEnabled)
+{
+    ZoneScopedN("Animation.EvaluateSkeletonPose");
+    EvaluateBoneWorld(skeleton, bindPose, motionPose, scratchWorld, ikEnabled);
+    BuildSkinningPalette(bindPose, scratchWorld, outPalette);
 }
 } // namespace MmdLab

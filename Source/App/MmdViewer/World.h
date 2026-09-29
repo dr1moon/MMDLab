@@ -1,12 +1,14 @@
 #pragma once
 
 #include "Runtime/Animation/VmdAnimator.h"
+#include "Runtime/Physics/PhysicsScene.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Scene/Camera.h"
 #include "Runtime/Scene/WorldData.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -74,6 +76,10 @@ public:
     // no level is loaded or the selected level has not finished loading.
     [[nodiscard]] std::span<const ModelInstance> SelectedInstances() const;
 
+    // The physics simulation of the registry model at `modelIndex`, or null when the model has no
+    // rigid bodies. Created when the model finishes loading. GameThread-only.
+    [[nodiscard]] PhysicsScene* PhysicsFor(std::size_t modelIndex);
+
 private:
     // One model mid-assembly: parsed mesh plus textures being filled by decode results.
     struct PendingModel
@@ -101,6 +107,7 @@ private:
     std::vector<PendingLevel> pending_;
     Camera camera_;
     VmdAnimator animator_;
+    std::vector<std::unique_ptr<PhysicsScene>> physicsScenes_; // Parallel to the registry models.
     std::vector<MotionEntry> motions_;
     std::uint32_t selectedMotion_ = kInvalidMotionIndex;
     ModelRegistry* registry_ = nullptr;

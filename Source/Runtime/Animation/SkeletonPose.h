@@ -39,6 +39,23 @@ struct BonePose
 // local frame.
 [[nodiscard]] BindPose BuildBindPose(const Skeleton& skeleton);
 
+// Evaluates every bone's model-space world transform: forward kinematics over `motionPose` (null
+// for the bind pose), then IK, axis constraints, and "付与" grants. This is the pose physics reads
+// before it overrides the simulated bones. `ikEnabled` is as in EvaluateSkeletonPose.
+void EvaluateBoneWorld(
+    const Skeleton& skeleton,
+    const BindPose& bindPose,
+    const BonePose* motionPose,
+    std::vector<DirectX::XMMATRIX>& outWorld,
+    const std::vector<bool>* ikEnabled = nullptr);
+
+// Builds the skinning palette (inverseBind_i * world_i) from final world transforms.
+void BuildSkinningPalette(
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& world,
+    std::vector<DirectX::XMFLOAT4X4>& outPalette);
+
+// EvaluateBoneWorld followed by BuildSkinningPalette, for callers without physics.
 // Evaluates the skinning palette (world_i * inverseBind_i) for every bone, ready for the vertex
 // shader to consume as its bone-matrix array. `motionPose` may be null for the bind pose, in
 // which case the palette is the identity and skinning reproduces the static mesh. `ikEnabled`,

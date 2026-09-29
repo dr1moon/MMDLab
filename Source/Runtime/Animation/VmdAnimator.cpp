@@ -153,6 +153,7 @@ void VmdAnimator::SetMotion(VmdMotion motion)
         }
     }
     timeFrames_ = 0.0f;
+    ++poseGeneration_;
 }
 
 void VmdAnimator::Advance(const float deltaSeconds)
@@ -175,6 +176,7 @@ void VmdAnimator::Advance(const float deltaSeconds)
 void VmdAnimator::SeekFrames(const float frames)
 {
     timeFrames_ = std::clamp(frames, 0.0f, durationFrames_);
+    ++poseGeneration_;
 }
 
 void VmdAnimator::SamplePose(

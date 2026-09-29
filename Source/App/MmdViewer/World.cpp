@@ -158,7 +158,22 @@ void World::FinishModel(const std::size_t levelIndex, const std::size_t modelSlo
         level.instances.push_back(instance);
         LogInfo("Asset", std::format("Loaded model '{}'", modelName));
 
-        const MeshAsset& mesh = registry_->Models()[instance.modelIndex].mesh;
+        // The registry is reserved up front, so the model (and the skeleton the scene
+        // references) never moves.
+        const Model& model = registry_->Models()[instance.modelIndex];
+        if (physicsScenes_.size() <= instance.modelIndex)
+        {
+            physicsScenes_.resize(instance.modelIndex + 1);
+        }
+        if (!model.physics.bodies.empty())
+        {
+            physicsScenes_[instance.modelIndex] =
+                std::make_unique<PhysicsScene>(model.physics, model.skeleton, model.bindPose);
+            LogInfo("Physics", std::format("'{}': {} rigid bodies, {} joints", modelName,
+                model.physics.bodies.size(), model.physics.constraints.size()));
+        }
+
+        const MeshAsset& mesh = model.mesh;
         for (int axis = 0; axis < 3; ++axis)
         {
             level.boundsMin[axis] = std::min(level.boundsMin[axis], mesh.boundsMin[axis]);
@@ -215,6 +230,11 @@ std::span<const ModelInstance> World::SelectedInstances() const
         return {};
     }
     return levels_[selectedLevel_].instances;
+}
+
+PhysicsScene* World::PhysicsFor(const std::size_t modelIndex)
+{
+    return modelIndex < physicsScenes_.size() ? physicsScenes_[modelIndex].get() : nullptr;
 }
 
 void World::LoadMotionsFromDirectory(const std::filesystem::path& directory)

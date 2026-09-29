@@ -5,6 +5,7 @@
 #include "Runtime/Asset/VmdFile.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,10 @@ public:
     [[nodiscard]] float DurationFrames() const { return durationFrames_; }
     [[nodiscard]] bool IsPlaying() const { return playing_; }
     void SetPlaying(bool playing) { playing_ = playing; }
+
+    // Bumped whenever the sampled pose jumps rather than advancing continuously (a new motion or
+    // a seek; the loop wrap is not a jump), so physics knows to reset instead of simulating it.
+    [[nodiscard]] std::uint32_t PoseGeneration() const { return poseGeneration_; }
 
     // Sets playback time directly, clamped to [0, duration], so the UI timeline can seek and
     // restart (seek to 0) without affecting the play/pause state.
@@ -57,6 +62,7 @@ private:
     float timeFrames_ = 0.0f;
     float durationFrames_ = 0.0f;
     bool playing_ = true;
+    std::uint32_t poseGeneration_ = 0;
     // One-shot: log the VMD tracks that match no skeleton bone on the first sample.
     mutable bool unmatchedLogged_ = false;
 };

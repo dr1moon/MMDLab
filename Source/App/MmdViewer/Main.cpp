@@ -136,6 +136,7 @@ int wmain(const int argc, wchar_t* argv[])
         // GameThread role: apply UI selection changes, project the scene into each frame, and
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
+        std::uint32_t lastPoseGeneration = 0;
         if (frameLimit > 0)
         {
             MmdLab::LogInfo("App", std::format("Running {} frame(s), then exiting", frameLimit));
@@ -225,6 +226,9 @@ int wmain(const int argc, wchar_t* argv[])
             std::vector<float> morphDelta;
             MmdLab::BonePose motionPose;
             std::vector<bool> ikEnabled;
+            // A pose jump (new motion, seek) resets physics instead of simulating the jump.
+            const bool poseJumped = world.Animator().PoseGeneration() != lastPoseGeneration;
+            lastPoseGeneration = world.Animator().PoseGeneration();
             for (std::size_t m = 0; m < models.size(); ++m)
             {
                 const MmdLab::Model& model = models[m];
@@ -237,13 +241,25 @@ int wmain(const int argc, wchar_t* argv[])
                     world.Animator().SampleMorphWeights(model.morphs, morphWeights);
                     MmdLab::ResolveMorphWeights(model.morphs, morphWeights, resolvedWeights);
                     MmdLab::ApplyBoneMorphs(model.morphs, resolvedWeights, motionPose);
-                    MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, &motionPose, palette, worldScratch, &ikEnabled);
+                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, &motionPose, worldScratch, &ikEnabled);
                 }
                 else
                 {
-                    MmdLab::EvaluateSkeletonPose(model.skeleton, model.bindPose, nullptr, palette, worldScratch);
+                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, worldScratch);
                     resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
                 }
+
+                // Physics runs between the animated pose and skinning: it moves the follow-bone
+                // colliders, steps, and overrides the simulated bones (hair, cloth, accessories).
+                if (MmdLab::PhysicsScene* physics = world.PhysicsFor(m))
+                {
+                    if (poseJumped)
+                    {
+                        physics->Reset(worldScratch);
+                    }
+                    physics->Simulate(deltaTime, worldScratch);
+                }
+                MmdLab::BuildSkinningPalette(model.bindPose, worldScratch, palette);
 
                 // Accumulate active vertex morphs into a dense per-vertex position delta (all
                 // zeros with no motion), so the renderer uploads and applies it in the shader.
