@@ -19,6 +19,10 @@ enum class UiCommand : std::uint32_t
     SetMotionPlaying,
     SeekMotion,
     SetCameraFov,
+    SetPhysicsEnabled,
+    SetPhysicsDebugDraw,
+    SetPhysicsGround,
+    ResetPhysics,
 };
 
 // RhiThread -> GameThread: a user edit from the imgui panel. SelectLevel changes the level combo;
@@ -28,7 +32,7 @@ struct UiRequest
 {
     UiCommand command = UiCommand::SelectLevel;
     std::uint32_t index = 0;   // Level index (SelectLevel), instance index (SetInstanceVisible), or motion index (SelectMotion).
-    bool visible = true;       // SetInstanceVisible: the instance's new visibility state.
+    bool visible = true;       // SetInstanceVisible / SetPhysics*: the new on/off state.
     bool playing = true;       // SetMotionPlaying: whether the motion advances.
     float seekFrames = 0.0f;   // SeekMotion: target playback time in 30 fps frames.
     float fovDegrees = 45.0f;  // SetCameraFov: vertical field of view in degrees.

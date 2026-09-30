@@ -100,6 +100,8 @@ struct PhysicsScene::Impl
     struct Body
     {
         BodyMode mode = BodyMode::FollowBone;
+        BodyShape shapeKind = BodyShape::Sphere;
+        float size[3] = { 0.0f, 0.0f, 0.0f };
         std::uint16_t bone = kInvalidBoneIndex;
         DirectX::XMFLOAT4X4 offset;        // Body world = offset * bone world.
         DirectX::XMFLOAT4X4 inverseOffset; // Bone world = inverseOffset * body world.
@@ -183,6 +185,11 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
     {
         Impl::Body body;
         body.mode = setup.mode;
+        body.shapeKind = setup.shape;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            body.size[axis] = setup.size[axis];
+        }
         body.bone = setup.boneIndex < boneCount ? setup.boneIndex : kInvalidBoneIndex;
 
         const XMMATRIX bodyBind = PmxTransform(setup.position, setup.rotation);
@@ -429,5 +436,24 @@ DirectX::XMMATRIX PhysicsScene::BodyWorld(const std::size_t index) const
     btTransform transform;
     impl_->bodies[index].motionState->getWorldTransform(transform);
     return FromBullet(transform);
+}
+
+void PhysicsScene::AppendDebugBodies(std::vector<PhysicsDebugBody>& out) const
+{
+    out.reserve(out.size() + impl_->bodies.size());
+    for (const Impl::Body& body : impl_->bodies)
+    {
+        PhysicsDebugBody debug;
+        btTransform transform;
+        body.motionState->getWorldTransform(transform);
+        DirectX::XMStoreFloat4x4(&debug.world, FromBullet(transform));
+        debug.shape = body.shapeKind;
+        debug.mode = body.mode;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            debug.size[axis] = body.size[axis];
+        }
+        out.push_back(debug);
+    }
 }
 } // namespace MmdLab

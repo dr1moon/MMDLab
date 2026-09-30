@@ -80,6 +80,17 @@ public:
     // rigid bodies. Created when the model finishes loading. GameThread-only.
     [[nodiscard]] PhysicsScene* PhysicsFor(std::size_t modelIndex);
 
+    // Physics toggles from the UI. Turning physics back on, or ResetPhysics, requests a reset so
+    // the bodies restart from the current pose; ConsumePhysicsReset returns and clears it.
+    void SetPhysicsEnabled(bool enabled);
+    void SetPhysicsDebugDraw(bool enabled) { physicsDebugDraw_ = enabled; }
+    void SetPhysicsGround(bool enabled);
+    void RequestPhysicsReset() { physicsResetRequested_ = true; }
+    [[nodiscard]] bool ConsumePhysicsReset();
+    [[nodiscard]] bool PhysicsEnabled() const { return physicsEnabled_; }
+    [[nodiscard]] bool PhysicsDebugDraw() const { return physicsDebugDraw_; }
+    [[nodiscard]] bool PhysicsGround() const { return physicsGround_; }
+
 private:
     // One model mid-assembly: parsed mesh plus textures being filled by decode results.
     struct PendingModel
@@ -108,6 +119,10 @@ private:
     Camera camera_;
     VmdAnimator animator_;
     std::vector<std::unique_ptr<PhysicsScene>> physicsScenes_; // Parallel to the registry models.
+    bool physicsEnabled_ = true;
+    bool physicsDebugDraw_ = false;
+    bool physicsGround_ = true;
+    bool physicsResetRequested_ = false;
     std::vector<MotionEntry> motions_;
     std::uint32_t selectedMotion_ = kInvalidMotionIndex;
     ModelRegistry* registry_ = nullptr;

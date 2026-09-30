@@ -43,6 +43,9 @@ uint32_t RenderThread::Run()
         frame.renderToRhi.bonePaletteOffsets = renderFrame.bonePaletteOffsets;
         frame.renderToRhi.morphDeltas = renderFrame.morphDeltas;
         frame.renderToRhi.morphDeltaOffsets = renderFrame.morphDeltaOffsets;
+        frame.renderToRhi.physicsBodies = renderFrame.physicsBodies;
+        frame.renderToRhi.physicsBodyOffsets = renderFrame.physicsBodyOffsets;
+        frame.renderToRhi.physicsStats = renderFrame.physicsStats;
 
         output_->Push(*index);
     }

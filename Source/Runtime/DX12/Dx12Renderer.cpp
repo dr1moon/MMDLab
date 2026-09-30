@@ -47,20 +47,6 @@ void DumpD3d12Messages(ID3D12Device* device)
     }
 }
 
-// Builds the world matrix for an instance: YXZ Euler rotation then translation, expressed with
-// row-vector DirectXMath multiplication and stored column-major so HLSL mul(world, pos) reads it
-// directly. Identity for the default zero transform.
-DirectX::XMMATRIX ComputeWorldMatrix(const MmdLab::ModelInstance& instance)
-{
-    using namespace DirectX;
-    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
-        XMConvertToRadians(instance.rotation[0]), // pitch (X).
-        XMConvertToRadians(instance.rotation[1]), // yaw (Y).
-        XMConvertToRadians(instance.rotation[2])); // roll (Z).
-    const XMMATRIX translation = XMMatrixTranslation(
-        instance.translation[0], instance.translation[1], instance.translation[2]);
-    return XMMatrixMultiply(translation, rotation);
-}
 } // namespace
 
 namespace MmdLab
@@ -869,18 +855,9 @@ void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex, const C
 {
     using namespace DirectX;
 
-    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
-        XMConvertToRadians(camera.rotation[0]),
-        XMConvertToRadians(camera.rotation[1]),
-        XMConvertToRadians(camera.rotation[2]));
-    const XMMATRIX translation = XMMatrixTranslation(
-        camera.position[0], camera.position[1], camera.position[2]);
-    // Row-vector: apply rotation then translation. Inverting gives the view matrix.
-    const XMMATRIX view = XMMatrixInverse(nullptr, XMMatrixMultiply(rotation, translation));
-
+    const XMMATRIX view = camera.ViewMatrix();
     const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
-    const XMMATRIX projection = XMMatrixPerspectiveFovLH(
-        XMConvertToRadians(camera.fovDegrees), aspect, camera.nearPlane, camera.farPlane);
+    const XMMATRIX projection = camera.ProjectionMatrix(aspect);
 
     // HLSL mul(matrix, pos) treats pos as a column vector; DirectXMath is row-vector, and
     // XMStoreFloat4x4 lays each matrix out in the column-major order HLSL expects, so both
@@ -1052,7 +1029,8 @@ std::uint64_t Dx12Renderer::Render(
 
             // Per-instance world transform, stored column-major for HLSL mul(world, pos).
             DirectX::XMFLOAT4X4 worldStorage;
-            DirectX::XMStoreFloat4x4(&worldStorage, ComputeWorldMatrix(instance));
+            // Stored column-major so HLSL mul(world, pos) reads it directly.
+            DirectX::XMStoreFloat4x4(&worldStorage, InstanceWorldMatrix(instance));
             commandList_->SetGraphicsRoot32BitConstants(3, 16, &worldStorage, 0);
 
             // Upload this model's skinning palette: write the staging buffer, copy it into the

@@ -118,4 +118,19 @@ void Camera::Tick(const float /*deltaTime*/)
     position[1] = pivot[1] - forward[1] * orbitDistance;
     position[2] = pivot[2] - forward[2] * orbitDistance;
 }
+
+DirectX::XMMATRIX Camera::ViewMatrix() const
+{
+    using namespace DirectX;
+    const XMMATRIX eyeRotation = XMMatrixRotationRollPitchYaw(
+        XMConvertToRadians(rotation[0]), XMConvertToRadians(rotation[1]), XMConvertToRadians(rotation[2]));
+    const XMMATRIX eyeTranslation = XMMatrixTranslation(position[0], position[1], position[2]);
+    // Row-vector: apply rotation then translation. Inverting gives the view matrix.
+    return XMMatrixInverse(nullptr, XMMatrixMultiply(eyeRotation, eyeTranslation));
+}
+
+DirectX::XMMATRIX Camera::ProjectionMatrix(const float aspect) const
+{
+    return DirectX::XMMatrixPerspectiveFovLH(DirectX::XMConvertToRadians(fovDegrees), aspect, nearPlane, farPlane);
+}
 } // namespace MmdLab

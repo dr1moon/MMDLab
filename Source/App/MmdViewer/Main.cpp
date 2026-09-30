@@ -174,6 +174,18 @@ int wmain(const int argc, wchar_t* argv[])
                     case MmdLab::UiCommand::SetCameraFov:
                         world.GetCamera().SetFovDegrees(request->fovDegrees);
                         break;
+                    case MmdLab::UiCommand::SetPhysicsEnabled:
+                        world.SetPhysicsEnabled(request->visible);
+                        break;
+                    case MmdLab::UiCommand::SetPhysicsDebugDraw:
+                        world.SetPhysicsDebugDraw(request->visible);
+                        break;
+                    case MmdLab::UiCommand::SetPhysicsGround:
+                        world.SetPhysicsGround(request->visible);
+                        break;
+                    case MmdLab::UiCommand::ResetPhysics:
+                        world.RequestPhysicsReset();
+                        break;
                 }
             }
             while (const auto input = cameraQueue.TryPop())
@@ -222,6 +234,12 @@ int wmain(const int argc, wchar_t* argv[])
             frame.bonePaletteOffsetSnapshot.assign(models.size() + 1, 0);
             frame.morphDeltaSnapshot.clear();
             frame.morphDeltaOffsetSnapshot.assign(models.size() + 1, 0);
+            frame.physicsBodySnapshot.clear();
+            frame.physicsBodyOffsetSnapshot.assign(models.size() + 1, 0);
+            MmdLab::PhysicsStats physicsStats;
+            physicsStats.enabled = world.PhysicsEnabled();
+            physicsStats.debugDraw = world.PhysicsDebugDraw();
+            physicsStats.ground = world.PhysicsGround();
             std::vector<DirectX::XMFLOAT4X4> palette;
             std::vector<DirectX::XMMATRIX> worldScratch;
             std::vector<DirectX::XMMATRIX> localScratch;
@@ -235,8 +253,9 @@ int wmain(const int argc, wchar_t* argv[])
             const MmdLab::VmdAnimator& animator = world.Animator();
             const bool motionChanged = animator.MotionGeneration() != lastMotionGeneration;
             const bool seeked = !motionChanged && animator.PoseGeneration() != lastPoseGeneration;
-            const MmdLab::PhysicsStep physicsStep = MmdLab::ResolvePhysicsStep(motionChanged, seeked,
+            MmdLab::PhysicsStep physicsStep = MmdLab::ResolvePhysicsStep(motionChanged, seeked,
                 !animator.HasMotion() || animator.IsPlaying(), lastMotionFrames, animator.TimeFrames(), deltaTime);
+            physicsStep.reset = world.ConsumePhysicsReset() || physicsStep.reset;
             lastMotionGeneration = animator.MotionGeneration();
             lastPoseGeneration = animator.PoseGeneration();
             lastMotionFrames = animator.TimeFrames();
@@ -263,14 +282,28 @@ int wmain(const int argc, wchar_t* argv[])
 
                 // Physics runs between the animated pose and skinning: it moves the follow-bone
                 // colliders, steps, and overrides the simulated bones (hair, cloth, accessories).
-                if (MmdLab::PhysicsScene* physics = world.PhysicsFor(m))
+                MmdLab::PhysicsScene* physics = world.PhysicsFor(m);
+                if (physics != nullptr && physicsStats.enabled)
                 {
+                    const auto physicsStart = std::chrono::steady_clock::now();
                     if (physicsStep.reset)
                     {
                         physics->Reset(worldScratch);
                     }
                     physics->Simulate(physicsStep.deltaSeconds, worldScratch);
+                    physicsStats.simulateMilliseconds += std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - physicsStart).count();
                 }
+                if (physics != nullptr)
+                {
+                    physicsStats.bodyCount += static_cast<std::uint32_t>(physics->BodyCount());
+                    physicsStats.constraintCount += static_cast<std::uint32_t>(model.physics.constraints.size());
+                    if (physicsStats.debugDraw)
+                    {
+                        physics->AppendDebugBodies(frame.physicsBodySnapshot);
+                    }
+                }
+                frame.physicsBodyOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.physicsBodySnapshot.size());
                 // PMX PhysicsAfterDeform bones (and their IK and grants) follow the simulation.
                 MmdLab::EvaluateBoneWorldAfterPhysics(model.skeleton, model.bindPose, localScratch, worldScratch,
                     ikEnabled.empty() ? nullptr : &ikEnabled);
@@ -290,6 +323,9 @@ int wmain(const int argc, wchar_t* argv[])
             renderFrame.bonePaletteOffsets = frame.bonePaletteOffsetSnapshot;
             renderFrame.morphDeltas = frame.morphDeltaSnapshot;
             renderFrame.morphDeltaOffsets = frame.morphDeltaOffsetSnapshot;
+            renderFrame.physicsBodies = frame.physicsBodySnapshot;
+            renderFrame.physicsBodyOffsets = frame.physicsBodyOffsetSnapshot;
+            renderFrame.physicsStats = physicsStats;
 
             gameToRender.Push(index);
 

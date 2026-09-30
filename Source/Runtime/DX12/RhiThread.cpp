@@ -3,6 +3,7 @@
 #include "Runtime/Asset/Model.h"
 #include "Runtime/DX12/Dx12Renderer.h"
 #include "Runtime/DX12/RenderDocCapture.h"
+#include "Runtime/Scene/PhysicsDebugDraw.h"
 #include "Runtime/Scene/WorldData.h"
 #include "Runtime/Core/Log.h"
 
@@ -369,6 +370,43 @@ uint32_t RhiThread::Run()
                 ImGui::EndTabItem();
             }
 
+            if (ImGui::BeginTabItem("Physics"))
+            {
+                const PhysicsStats& stats = batch.physicsStats;
+                bool enabled = stats.enabled;
+                if (ImGui::Checkbox("Simulate", &enabled))
+                {
+                    uiQueue_->TryPush(UiRequest{ .command = UiCommand::SetPhysicsEnabled, .visible = enabled });
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    uiQueue_->TryPush(UiRequest{ .command = UiCommand::ResetPhysics });
+                }
+                bool ground = stats.ground;
+                if (ImGui::Checkbox("Ground plane (y = 0)", &ground))
+                {
+                    uiQueue_->TryPush(UiRequest{ .command = UiCommand::SetPhysicsGround, .visible = ground });
+                }
+                bool debugDraw = stats.debugDraw;
+                if (ImGui::Checkbox("Draw rigid bodies", &debugDraw))
+                {
+                    uiQueue_->TryPush(UiRequest{ .command = UiCommand::SetPhysicsDebugDraw, .visible = debugDraw });
+                }
+                if (debugDraw)
+                {
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "follow bone");
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "physics");
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "physics + bone position");
+                }
+                ImGui::Separator();
+                ImGui::Text("%u rigid bodies, %u joints", stats.bodyCount, stats.constraintCount);
+                ImGui::Text("Simulate: %.3f ms / frame", stats.simulateMilliseconds);
+                ImGui::EndTabItem();
+            }
+
             if (ImGui::BeginTabItem("Camera"))
             {
                 float fovDegrees = batch.camera.fovDegrees;
@@ -382,6 +420,42 @@ uint32_t RhiThread::Run()
             ImGui::EndTabBar();
         }
         ImGui::End();
+
+        // Physics debug wireframes, drawn behind the imgui windows over the scene. Bodies are in
+        // model space, so each goes through its instance's world matrix, then view-projection.
+        if (!batch.physicsBodies.empty() && batch.physicsBodyOffsets.size() == batch.models.size() + 1)
+        {
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            if (display.x > 0.0f && display.y > 0.0f)
+            {
+                const DirectX::XMMATRIX viewProjection = DirectX::XMMatrixMultiply(
+                    batch.camera.ViewMatrix(), batch.camera.ProjectionMatrix(display.x / display.y));
+                debugLines_.clear();
+                for (const ModelInstance& instance : batch.instances)
+                {
+                    if (!instance.visible || instance.modelIndex >= batch.models.size())
+                    {
+                        continue;
+                    }
+                    const DirectX::XMMATRIX modelToClip = DirectX::XMMatrixMultiply(
+                        InstanceWorldMatrix(instance), viewProjection);
+                    const std::uint32_t first = batch.physicsBodyOffsets[instance.modelIndex];
+                    const std::uint32_t last = batch.physicsBodyOffsets[instance.modelIndex + 1];
+                    for (std::uint32_t b = first; b < last && b < batch.physicsBodies.size(); ++b)
+                    {
+                        AppendBodyWireframe(batch.physicsBodies[b], modelToClip, display.x, display.y, debugLines_);
+                    }
+                }
+                ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+                for (const DebugLine2D& line : debugLines_)
+                {
+                    const ImU32 color = line.mode == BodyMode::FollowBone ? IM_COL32(80, 255, 80, 200)
+                        : line.mode == BodyMode::Physics ? IM_COL32(255, 90, 90, 200)
+                        : IM_COL32(255, 230, 50, 200);
+                    drawList->AddLine(ImVec2(line.x0, line.y0), ImVec2(line.x1, line.y1), color, 1.0f);
+                }
+            }
+        }
 
         // Camera control: orbit with a left-drag, pan with a middle-drag, and zoom with the
         // wheel, but only while the pointer is not over an imgui widget (WantCaptureMouse).

@@ -49,6 +49,9 @@ public:
     // The current model-space transform of body `index` (for tests and debug drawing).
     [[nodiscard]] DirectX::XMMATRIX BodyWorld(std::size_t index) const;
 
+    // Appends every body's current transform, shape, and mode, for debug drawing.
+    void AppendDebugBodies(std::vector<PhysicsDebugBody>& out) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

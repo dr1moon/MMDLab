@@ -5,12 +5,14 @@
 #include "Runtime/Core/FrameResourcePool.h"
 #include "Runtime/Core/Runnable.h"
 #include "Runtime/Core/Ui.h"
+#include "Runtime/Scene/PhysicsDebugDraw.h"
 
 #include <windows.h>
 
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <vector>
 
 struct ImGuiContext;
 
@@ -59,6 +61,8 @@ private:
     bool captureRequested_ = false;
     bool minimized_ = false;
     ImGuiContext* imguiContext_ = nullptr;
+    // Scratch for the physics debug overlay, reused across frames.
+    std::vector<DebugLine2D> debugLines_;
     // Level generation last applied to the renderer; the sentinel forces the first build.
     std::uint32_t lastLevelGeneration_ = 0xFFFFFFFFu;
 

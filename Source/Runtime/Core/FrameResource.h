@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Asset/PhysicsAsset.h"
 #include "Runtime/Scene/Camera.h"
 #include "Runtime/Scene/WorldData.h"
 
@@ -49,6 +50,11 @@ struct RenderFrame
     // FrameResource; zero for models with no active vertex morphs.
     std::span<const float> morphDeltas;
     std::span<const std::uint32_t> morphDeltaOffsets;
+    // Physics debug bodies in model space, concatenated in model-index order and sliced by
+    // `physicsBodyOffsets` (size modelCount + 1). Empty unless debug drawing is on.
+    std::span<const PhysicsDebugBody> physicsBodies;
+    std::span<const std::uint32_t> physicsBodyOffsets;
+    PhysicsStats physicsStats;
 };
 
 // One sub-mesh draw command: a range of the index buffer plus the material that shades it and
@@ -82,6 +88,9 @@ struct RenderWorkBatch
     std::span<const std::uint32_t> bonePaletteOffsets;
     std::span<const float> morphDeltas;
     std::span<const std::uint32_t> morphDeltaOffsets;
+    std::span<const PhysicsDebugBody> physicsBodies;
+    std::span<const std::uint32_t> physicsBodyOffsets;
+    PhysicsStats physicsStats;
 };
 
 // One reusable bundle of everything an in-flight frame needs across the
@@ -105,6 +114,9 @@ struct FrameResource
     // Frame-local morph deltas (concatenated, 3 floats per vertex) plus per-model start offsets.
     std::vector<float> morphDeltaSnapshot;
     std::vector<std::uint32_t> morphDeltaOffsetSnapshot;
+    // Frame-local physics debug bodies (concatenated) plus per-model start offsets.
+    std::vector<PhysicsDebugBody> physicsBodySnapshot;
+    std::vector<std::uint32_t> physicsBodyOffsetSnapshot;
     // Fence value RhiThread records when it submits this frame's GPU work. It tells
     // RhiThread when the frame can be retired and the resource returned to the pool.
     uint64_t gpuFenceValue = 0;

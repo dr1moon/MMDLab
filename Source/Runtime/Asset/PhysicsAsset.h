@@ -2,6 +2,8 @@
 
 #include "Runtime/Asset/Skeleton.h"
 
+#include <DirectXMath.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -73,5 +75,26 @@ struct PhysicsAsset
 {
     std::vector<BodySetup> bodies;
     std::vector<ConstraintSetup> constraints;
+};
+
+// One simulated body's current shape and model-space transform, projected into a frame so the
+// renderer can draw physics debug wireframes without touching the simulation.
+struct PhysicsDebugBody
+{
+    DirectX::XMFLOAT4X4 world;
+    BodyShape shape = BodyShape::Sphere;
+    BodyMode mode = BodyMode::FollowBone;
+    float size[3] = { 0.0f, 0.0f, 0.0f };
+};
+
+// Per-frame physics status for the UI.
+struct PhysicsStats
+{
+    bool enabled = true;
+    bool debugDraw = false;
+    bool ground = true;
+    std::uint32_t bodyCount = 0;
+    std::uint32_t constraintCount = 0;
+    float simulateMilliseconds = 0.0f; // GameThread time in PhysicsScene::Simulate this frame.
 };
 } // namespace MmdLab

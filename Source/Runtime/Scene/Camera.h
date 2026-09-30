@@ -1,5 +1,7 @@
 #pragma once
 
+#include <DirectXMath.h>
+
 namespace MmdLab
 {
 // The world's orbit camera, owned by the World and projected into each frame for the renderer
@@ -30,5 +32,10 @@ struct Camera
     void SetFovDegrees(float degrees);
     void FrameTo(const float boundsMin[3], const float boundsMax[3]);
     void Tick(float deltaTime);
+
+    // The view matrix (inverse of the eye transform) and the left-handed perspective projection,
+    // in DirectXMath row-vector form.
+    [[nodiscard]] DirectX::XMMATRIX ViewMatrix() const;
+    [[nodiscard]] DirectX::XMMATRIX ProjectionMatrix(float aspect) const;
 };
 } // namespace MmdLab

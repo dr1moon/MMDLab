@@ -1,5 +1,7 @@
 #pragma once
 
+#include <DirectXMath.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -18,6 +20,20 @@ struct ModelInstance
     float rotation[3] = { 0.0f, 0.0f, 0.0f }; // Euler degrees; YXZ order (MMD convention).
     bool visible = true;
 };
+
+// An instance's world matrix: YXZ Euler rotation then translation, in DirectXMath row-vector
+// form. Identity for the default zero transform.
+[[nodiscard]] inline DirectX::XMMATRIX InstanceWorldMatrix(const ModelInstance& instance)
+{
+    using namespace DirectX;
+    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
+        XMConvertToRadians(instance.rotation[0]), // pitch (X).
+        XMConvertToRadians(instance.rotation[1]), // yaw (Y).
+        XMConvertToRadians(instance.rotation[2])); // roll (Z).
+    const XMMATRIX translation = XMMatrixTranslation(
+        instance.translation[0], instance.translation[1], instance.translation[2]);
+    return XMMatrixMultiply(translation, rotation);
+}
 
 // One level, e.g. a folder under the models directory: an ordered group of model instances
 // (the characters and objects that compose it). Each instance references a model in the

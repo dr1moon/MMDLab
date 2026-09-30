@@ -169,6 +169,7 @@ void World::FinishModel(const std::size_t levelIndex, const std::size_t modelSlo
         {
             physicsScenes_[instance.modelIndex] =
                 std::make_unique<PhysicsScene>(model.physics, model.skeleton, model.bindPose);
+            physicsScenes_[instance.modelIndex]->SetGroundEnabled(physicsGround_);
             LogInfo("Physics", std::format("'{}': {} rigid bodies, {} joints", modelName,
                 model.physics.bodies.size(), model.physics.constraints.size()));
         }
@@ -235,6 +236,34 @@ std::span<const ModelInstance> World::SelectedInstances() const
 PhysicsScene* World::PhysicsFor(const std::size_t modelIndex)
 {
     return modelIndex < physicsScenes_.size() ? physicsScenes_[modelIndex].get() : nullptr;
+}
+
+void World::SetPhysicsEnabled(const bool enabled)
+{
+    if (enabled && !physicsEnabled_)
+    {
+        physicsResetRequested_ = true;
+    }
+    physicsEnabled_ = enabled;
+}
+
+void World::SetPhysicsGround(const bool enabled)
+{
+    physicsGround_ = enabled;
+    for (const std::unique_ptr<PhysicsScene>& scene : physicsScenes_)
+    {
+        if (scene != nullptr)
+        {
+            scene->SetGroundEnabled(enabled);
+        }
+    }
+}
+
+bool World::ConsumePhysicsReset()
+{
+    const bool requested = physicsResetRequested_;
+    physicsResetRequested_ = false;
+    return requested;
 }
 
 void World::LoadMotionsFromDirectory(const std::filesystem::path& directory)
