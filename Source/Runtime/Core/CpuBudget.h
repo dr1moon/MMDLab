@@ -13,4 +13,9 @@ namespace MmdLab
 // Placeholder policy: clamp to a small pool; revisit once measured topology justifies more (do
 // not pin threads or reserve physical cores before profiling).
 [[nodiscard]] std::uint32_t IoWorkerCount();
+
+// The number of compute worker threads for CPU-bound frame work (per-model animation and
+// physics), derived from the same budget as IoWorkerCount. The GameThread also runs compute jobs
+// while it waits, so it is not counted here. Placeholder policy pending measured topology.
+[[nodiscard]] std::uint32_t ComputeWorkerCount();
 } // namespace MmdLab

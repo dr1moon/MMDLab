@@ -5,6 +5,7 @@
 #include "Runtime/Asset/ModelRegistry.h"
 #include "App/MmdViewer/WindowsApplication.h"
 #include "Runtime/Core/Channel.h"
+#include "Runtime/Core/ComputeThreadsGroup.h"
 #include "Runtime/Core/CpuBudget.h"
 #include "Runtime/Core/FrameResource.h"
 #include "Runtime/Core/FrameResourcePool.h"
@@ -46,11 +47,15 @@ int wmain(const int argc, wchar_t* argv[])
         // The working directory is the project (see Project/Project.md): the editor loads every
         // .pmx under Models/ at startup, and the user switches between them with the imgui combo,
         // and plays the .vmd files under Motions/. `--frames N` bounds the run to N produced
-        // frames (for automated profiling); any other argument overrides the model scan directory
-        // (or names a .pmx file whose parent directory is scanned).
+        // frames (for automated profiling); `--compute-threads N` and `--io-threads N` override the
+        // worker-group sizes the CPU budget picks (0 compute threads evaluates every model on the
+        // GameThread); any other argument overrides the model scan directory (or names a .pmx file
+        // whose parent directory is scanned).
         const std::filesystem::path projectDirectory = std::filesystem::current_path();
         std::filesystem::path scanDirectory = projectDirectory / L"Models";
         std::uint32_t frameLimit = 0;
+        std::uint32_t computeThreads = MmdLab::ComputeWorkerCount();
+        std::uint32_t ioThreads = MmdLab::IoWorkerCount();
         for (int i = 1; i < argc; ++i)
         {
             if (std::wcscmp(argv[i], L"--frames") == 0 && i + 1 < argc)
@@ -59,6 +64,26 @@ int wmain(const int argc, wchar_t* argv[])
                 if (parsed > 0)
                 {
                     frameLimit = static_cast<std::uint32_t>(parsed);
+                }
+                ++i;
+                continue;
+            }
+            if (std::wcscmp(argv[i], L"--compute-threads") == 0 && i + 1 < argc)
+            {
+                const long parsed = std::wcstol(argv[i + 1], nullptr, 10);
+                if (parsed >= 0)
+                {
+                    computeThreads = static_cast<std::uint32_t>(parsed);
+                }
+                ++i;
+                continue;
+            }
+            if (std::wcscmp(argv[i], L"--io-threads") == 0 && i + 1 < argc)
+            {
+                const long parsed = std::wcstol(argv[i + 1], nullptr, 10);
+                if (parsed > 0)
+                {
+                    ioThreads = static_cast<std::uint32_t>(parsed);
                 }
                 ++i;
                 continue;
@@ -85,7 +110,11 @@ int wmain(const int argc, wchar_t* argv[])
         // level onto it.
         MmdLab::Channel<MmdLab::LoadRequest, MmdLab::kLoadRequestCapacity> loadRequestQueue;
         MmdLab::Channel<MmdLab::LoadResult, MmdLab::kLoadResultCapacity> loadResultQueue;
-        MmdLab::IoThreadsGroup ioGroup(MmdLab::IoWorkerCount(), loadRequestQueue, loadResultQueue);
+        MmdLab::IoThreadsGroup ioGroup(ioThreads, loadRequestQueue, loadResultQueue);
+
+        // The compute execution resource: the GameThread forks each frame's independent per-model
+        // evaluations across it and joins before projecting the results.
+        MmdLab::ComputeThreadsGroup computeGroup(computeThreads);
 
         MmdLab::ModelRegistry modelRegistry;
         MmdLab::World world;
@@ -295,10 +324,7 @@ int wmain(const int argc, wchar_t* argv[])
             };
             {
                 ZoneScopedN("GameThread.EvaluateModels");
-                for (std::size_t m = 0; m < models.size(); ++m)
-                {
-                    evaluateModel(m);
-                }
+                computeGroup.ParallelFor(models.size(), evaluateModel);
             }
             for (const MmdLab::ModelFrameStats& stats : modelStats)
             {
@@ -323,6 +349,7 @@ int wmain(const int argc, wchar_t* argv[])
         }
 
         // Shut down upstream-first so the pipeline drains in order.
+        computeGroup.Stop();
         ioGroup.Stop();
         renderThread.RequestStop();
         rhiThread.RequestStop();

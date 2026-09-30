@@ -12,13 +12,27 @@ std::uint32_t PlatformLogicalProcessorCount()
     return count == 0 ? 1u : static_cast<std::uint32_t>(count);
 }
 
+namespace
+{
+// The processors a worker group may use: the platform budget minus a few for the Game/Render/RHI
+// ownership contexts and the OS. Placeholder policy pending measured topology.
+std::uint32_t WorkerBudget()
+{
+    const std::uint32_t logical = PlatformLogicalProcessorCount();
+    return logical > 4 ? logical - 4 : 1;
+}
+} // namespace
+
 std::uint32_t IoWorkerCount()
 {
-    // I/O loading is CPU-bound (PMX parse + image decode), so size the pool to most of the
-    // platform budget, leaving a few processors for the Game/Render/RHI pipeline and the OS.
-    // Placeholder policy pending measured topology.
-    const std::uint32_t logical = PlatformLogicalProcessorCount();
-    const std::uint32_t budget = logical > 4 ? logical - 4 : 1;
-    return std::min(budget, 12u);
+    // Loading is a short startup burst of cooked reads (PMX parse and texture decode still run
+    // here), and the CPU-bound frame work belongs to the compute group, so the I/O group stays
+    // small instead of claiming the whole budget alongside it.
+    return std::min(WorkerBudget(), 4u);
+}
+
+std::uint32_t ComputeWorkerCount()
+{
+    return WorkerBudget();
 }
 } // namespace MmdLab
