@@ -84,7 +84,7 @@ private:
 MMDLAB_TEST(Core.Thread, ConstructorWaitsForInitToComplete)
 {
     CountingRunnable runnable;
-    MmdLab::Thread thread(runnable, L"InitSync");
+    MmdLab::Thread thread(runnable, L"InitSync", MmdLab::ExecutionClass::AsyncIo);
 
     // Init() has completed before the constructor returned.
     MMDLAB_CHECK(runnable.initCalled.load());
@@ -96,7 +96,7 @@ MMDLAB_TEST(Core.Thread, RunsInitRunExitInOrder)
 {
     CountingRunnable runnable;
     {
-        MmdLab::Thread thread(runnable, L"Lifecycle");
+        MmdLab::Thread thread(runnable, L"Lifecycle", MmdLab::ExecutionClass::AsyncIo);
         thread.Join();
     }
 
@@ -108,7 +108,7 @@ MMDLAB_TEST(Core.Thread, RunsInitRunExitInOrder)
 MMDLAB_TEST(Core.Thread, ReportsRunnableExitCode)
 {
     CountingRunnable runnable;
-    MmdLab::Thread thread(runnable, L"ExitCode");
+    MmdLab::Thread thread(runnable, L"ExitCode", MmdLab::ExecutionClass::AsyncIo);
     thread.Join();
 
     MMDLAB_CHECK_EQUAL(CountingRunnable::kExitCode, thread.ExitCode());
@@ -117,7 +117,7 @@ MMDLAB_TEST(Core.Thread, ReportsRunnableExitCode)
 MMDLAB_TEST(Core.Thread, InitFailureSkipsRunAndExit)
 {
     FailingInitRunnable runnable;
-    MmdLab::Thread thread(runnable, L"InitFail");
+    MmdLab::Thread thread(runnable, L"InitFail", MmdLab::ExecutionClass::AsyncIo);
     thread.Join();
 
     MMDLAB_CHECK(!runnable.runCalled.load());
@@ -128,7 +128,7 @@ MMDLAB_TEST(Core.Thread, InitFailureSkipsRunAndExit)
 MMDLAB_TEST(Core.Thread, RequestStopTerminatesAndJoins)
 {
     StoppableRunnable runnable;
-    MmdLab::Thread thread(runnable, L"Stop");
+    MmdLab::Thread thread(runnable, L"Stop", MmdLab::ExecutionClass::AsyncIo);
 
     thread.RequestStop();
 
@@ -140,7 +140,7 @@ MMDLAB_TEST(Core.Thread, DestructorJoinsAStillRunningThread)
 {
     StoppableRunnable runnable;
     {
-        MmdLab::Thread thread(runnable, L"DestructorStop");
+        MmdLab::Thread thread(runnable, L"DestructorStop", MmdLab::ExecutionClass::AsyncIo);
     }
 
     MMDLAB_CHECK(runnable.stopCalled.load());

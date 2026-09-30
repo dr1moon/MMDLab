@@ -82,8 +82,8 @@ MMDLAB_TEST(Core.FrameLoop, RunsFramesThroughAllThreeStages)
     PassthroughStage renderStage(gameToRender, renderToRhi);
     ReleaseStage rhiStage(renderToRhi, pool);
 
-    MmdLab::Thread renderThread(renderStage, L"RenderThread");
-    MmdLab::Thread rhiThread(rhiStage, L"RhiThread");
+    MmdLab::Thread renderThread(renderStage, L"RenderThread", MmdLab::ExecutionClass::RenderOwner);
+    MmdLab::Thread rhiThread(rhiStage, L"RhiThread", MmdLab::ExecutionClass::RhiOwner);
 
     constexpr MmdLab::FrameId kProducedFrames = 25;
     for (MmdLab::FrameId frameId = 0; frameId < kProducedFrames; ++frameId)

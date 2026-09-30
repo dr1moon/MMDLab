@@ -87,7 +87,7 @@ ComputeThreadsGroup::ComputeThreadsGroup(const std::size_t workerCount)
     {
         workers_.push_back(std::make_unique<Worker>(*this));
         threads_.push_back(std::make_unique<Thread>(
-            *workers_.back(), L"ComputeThreadsGroup-" + std::to_wstring(i)));
+            *workers_.back(), L"ComputeThreadsGroup-" + std::to_wstring(i), ExecutionClass::Compute));
     }
 }
 

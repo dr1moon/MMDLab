@@ -1,6 +1,7 @@
 #include "Runtime/Core/Thread.h"
 
 #include "Runtime/Core/Log.h"
+#include "Runtime/Core/ThreadScheduling.h"
 #include "Runtime/Core/Utf8.h"
 
 #include "tracy/Tracy.hpp"
@@ -10,9 +11,10 @@
 
 namespace MmdLab
 {
-Thread::Thread(Runnable& runnable, const std::wstring_view name)
+Thread::Thread(Runnable& runnable, const std::wstring_view name, const ExecutionClass executionClass)
     : runnable_(&runnable)
     , name_(name)
+    , executionClass_(executionClass)
 {
     initEvent_ = CreateEventW(nullptr, false, false, nullptr);
     if (initEvent_ == nullptr)
@@ -105,6 +107,9 @@ uint32_t Thread::RunInternal()
     // timeline labels this thread by role rather than a raw OS thread id. A no-op when Tracy is
     // not compiled in.
     tracy::SetThreadName(threadName.c_str());
+    // Apply the execution class's scheduling policy on the thread itself, before Init, so the
+    // runnable's own setup already runs with its final priority and placement.
+    ApplyThreadScheduling(executionClass_);
 
     if (!runnable_->Init())
     {

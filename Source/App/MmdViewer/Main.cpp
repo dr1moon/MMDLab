@@ -11,6 +11,7 @@
 #include "Runtime/Core/FrameResourcePool.h"
 #include "Runtime/Core/Log.h"
 #include "Runtime/Core/Thread.h"
+#include "Runtime/Core/ThreadScheduling.h"
 #include "Runtime/Core/Ui.h"
 #include "Runtime/Core/Utf8.h"
 #include "Runtime/DX12/RhiThread.h"
@@ -41,6 +42,9 @@ int wmain(const int argc, wchar_t* argv[])
     // instead of a raw OS thread id. Worker threads register themselves inside Thread::RunInternal.
     MmdLab::RegisterThreadName("GameThread");
     tracy::SetThreadName("GameThread");
+    // Worker threads apply their execution class's scheduling policy in Thread::RunInternal; the
+    // main thread applies the GameThread's here, before it does any work.
+    MmdLab::ApplyThreadScheduling(MmdLab::ExecutionClass::GameOwner);
 
     try
     {
@@ -112,6 +116,20 @@ int wmain(const int argc, wchar_t* argv[])
         MmdLab::Channel<MmdLab::LoadResult, MmdLab::kLoadResultCapacity> loadResultQueue;
         MmdLab::IoThreadsGroup ioGroup(ioThreads, loadRequestQueue, loadResultQueue);
 
+        // The compute placement policy caps the worker count: each worker and the GameThread need a
+        // physical core of their own under one-processor-per-core placement.
+        const MmdLab::CpuTopology topology = MmdLab::QueryCpuTopology();
+        const std::size_t maxComputeWorkers =
+            MmdLab::MaxComputeWorkers(MmdLab::PolicyFor(MmdLab::ExecutionClass::Compute), topology);
+        MmdLab::LogInfo("Core", std::format("CPU topology: {} core(s), {} logical processor(s)",
+            topology.cores.size(), topology.LogicalProcessorCount()));
+        if (computeThreads > maxComputeWorkers)
+        {
+            MmdLab::LogInfo("Core", std::format("Compute workers capped at {} by the compute placement policy (requested {})",
+                maxComputeWorkers, computeThreads));
+            computeThreads = static_cast<std::uint32_t>(maxComputeWorkers);
+        }
+
         // The compute execution resource: the GameThread forks each frame's independent per-model
         // evaluations across it and joins before projecting the results.
         MmdLab::ComputeThreadsGroup computeGroup(computeThreads);
@@ -151,8 +169,8 @@ int wmain(const int argc, wchar_t* argv[])
         MmdLab::RenderThread renderStage(gameToRender, renderToRhi, pool);
         MmdLab::RhiThread rhiStage(renderToRhi, pool, application.GetWindowHandle(), width, height, inputQueue, uiQueue, cameraQueue);
 
-        MmdLab::Thread renderThread(renderStage, L"RenderThread");
-        MmdLab::Thread rhiThread(rhiStage, L"RhiThread");
+        MmdLab::Thread renderThread(renderStage, L"RenderThread", MmdLab::ExecutionClass::RenderOwner);
+        MmdLab::Thread rhiThread(rhiStage, L"RhiThread", MmdLab::ExecutionClass::RhiOwner);
 
         // The RhiThread owns the device and can fail during Init() (no adapter, missing feature
         // level, ...). Bail before the game loop so a half-built pipeline cannot deadlock waiting

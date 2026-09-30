@@ -109,7 +109,8 @@ IoThreadsGroup::IoThreadsGroup(
     for (std::size_t i = 0; i < count; ++i)
     {
         workers_.push_back(std::make_unique<IoWorker>(requests, results));
-        threads_.push_back(std::make_unique<Thread>(*workers_.back(), L"IoThreadsGroup-" + std::to_wstring(i)));
+        threads_.push_back(std::make_unique<Thread>(
+            *workers_.back(), L"IoThreadsGroup-" + std::to_wstring(i), ExecutionClass::AsyncIo));
     }
 }
 

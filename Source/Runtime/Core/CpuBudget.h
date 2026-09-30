@@ -16,6 +16,7 @@ namespace MmdLab
 
 // The number of compute worker threads for CPU-bound frame work (per-model animation and
 // physics), derived from the same budget as IoWorkerCount. The GameThread also runs compute jobs
-// while it waits, so it is not counted here. Placeholder policy pending measured topology.
+// while it waits, so it is not counted here. The Compute scheduling policy may cap it further
+// (MaxComputeWorkers in ThreadScheduling.h). Placeholder budget pending measured topology.
 [[nodiscard]] std::uint32_t ComputeWorkerCount();
 } // namespace MmdLab

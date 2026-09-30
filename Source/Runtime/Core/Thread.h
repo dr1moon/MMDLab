@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Core/ExecutionClass.h"
 #include "Runtime/Core/Runnable.h"
 
 #include <windows.h>
@@ -23,7 +24,9 @@ namespace MmdLab
 class Thread final
 {
 public:
-    Thread(Runnable& runnable, std::wstring_view name);
+    // `executionClass` declares what the thread is for; the thread applies the matching
+    // platform scheduling policy (priority, processor placement) to itself before Init().
+    Thread(Runnable& runnable, std::wstring_view name, ExecutionClass executionClass);
     ~Thread();
 
     Thread(const Thread&) = delete;
@@ -57,6 +60,7 @@ private:
 
     Runnable* runnable_;
     std::wstring name_;
+    ExecutionClass executionClass_;
     HANDLE handle_ = nullptr;
     HANDLE initEvent_ = nullptr;
     uint32_t threadId_ = 0;
