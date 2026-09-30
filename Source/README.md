@@ -191,19 +191,27 @@ An Animation System must not own an `AnimationThread`, and a Physics System must
 
 `IoThreadsGroup` still performs cooked reads, PMX parsing, and texture decoding at startup. It is sized small (four workers) because frame work now belongs to the compute group; moving CPU decode out of it into compute jobs is the next step when loading becomes a measured bottleneck. Add OS asynchronous I/O only if the I/O group cannot meet the required behavior by itself.
 
-### Future Execution Classes
+### Execution Classes and Scheduling Policy
 
-When real graph branches exist, systems may declare one of these execution classes in addition to their data contracts:
+Every operating-system thread declares one execution class (`Runtime/Core/ExecutionClass.h`): what the thread is for, never which processor it runs on. The platform scheduling policy (`Runtime/Core/ThreadScheduling.h`) maps each class to concrete operating-system settings. `Thread` applies its class's policy on the new thread before `Runnable::Init()`, and the GameThread applies its own at the top of `wmain`.
 
-| Execution Class | Runs On | Intended Use |
-| --- | --- | --- |
-| `GameOwner` | `GameThread` | mutable authoritative state and lifecycle transitions |
-| `RenderOwner` | `RenderThread` | render work compilation and render-frame ownership |
-| `RhiOwner` | `RhiThread` | native DX12 resource lifetime and command submission |
-| `Compute` | `ComputeThreadsGroup` | animation, inverse kinematics, physics, decoding, validation |
-| `AsyncIo` | OS asynchronous I/O plus optional `IoThreadsGroup` completion handling | file/device reads; not CPU decode work |
+| Execution Class | Runs On | Intended Use | Windows Priority | Windows Placement |
+| --- | --- | --- | --- | --- |
+| `GameOwner` | `GameThread` | mutable authoritative state and lifecycle transitions; also runs compute jobs in `ParallelFor` | above normal | one logical processor per core |
+| `RenderOwner` | `RenderThread` | render work compilation and render-frame ownership | above normal | operating system |
+| `RhiOwner` | `RhiThread` | native DX12 resource lifetime and command submission | above normal | operating system |
+| `Compute` | `ComputeThreadsGroup` | animation, inverse kinematics, physics, decoding, validation | normal | one logical processor per core |
+| `AsyncIo` | `IoThreadsGroup` | file reads; not CPU decode work once decode moves to compute jobs | normal | operating system |
 
-This table is a design boundary, not a request to implement a generic scheduler now.
+"One logical processor per core" restricts a thread, through CPU sets, to the lowest-numbered logical processor of every physical core, so two such threads can never occupy the two simultaneous-multithreading (SMT) siblings of one core. It is a set, not a pinning: the operating system still picks any of those processors, and no core is reserved. Under it, `MaxComputeWorkers` caps the compute group at one core fewer than the topology has, leaving a core for the GameThread.
+
+The placement entries are measured, not assumed. On an 8-core, 16-thread Ryzen 7 9700X with three models, 1800 vsync-paced frames per run, three runs each after a warm-up:
+
+- Left to the operating system, 55% of concurrent physics steps ran while another step occupied the SMT sibling of their core; those steps took 881 µs against 776 µs for a step alone on its core. Neither the core clock (a fixed arithmetic loop took the same time everywhere), a Bullet global, core parking, nor the sleep-and-wake cycle between frames explains it: workers that spin instead of sleeping were co-placed 43% of the time.
+- Restricting the workers and the GameThread to one logical processor per core, with CPU sets or an affinity mask, removed the co-placement entirely. Restricting only the workers left the GameThread free to land on a worker's sibling (33% co-placed). An ideal-processor hint alone changed nothing (48% co-placed).
+- CPU sets and an affinity mask remove the co-placement equally, but a hard single-processor affinity per thread made the last worker of a batch start 15 µs late at the median and 0.9 ms late at the 99th percentile, because it must wait for its one processor; CPU sets kept the start latency within 107 µs at the 99th percentile. Hence CPU sets.
+
+The frame is vsync-bound, so this recovers CPU headroom rather than frame rate. A policy entry changes only with a measurement that justifies it on the platform it applies to; other platforms supply their own table.
 
 ### CPU Budget Policy
 
@@ -217,9 +225,11 @@ Future worker count must come from a platform-specific CPU budget, not from a di
 - A console-class topology, including PS5, can be used as a future budget reference, but no PS5 core, SMT, CCX, or system-reservation number is hardcoded. The current DirectX 12 application remains a Windows PC project.
 - Cache locality may influence future job affinity only after profiling. Cache sharing, clusters, NUMA nodes, and operating-system scheduling groups remain separate topology relations.
 
-Do not add processor affinity, heterogeneous-core policy, platform-specific console code, or automatic worker-count heuristics before a compute pool exists and profiling demonstrates a need.
+Processor placement exists only where profiling demonstrated a need: the one-logical-processor-per-core placement of `Compute` and `GameOwner` above. Do not add heterogeneous-core (performance/efficiency class) policy, platform-specific console code, per-thread pinning, or automatic worker-count heuristics beyond a policy's cap until profiling demonstrates a need for each.
 
 ### Future CPU Topology Model
+
+`Runtime/Core/CpuTopology.h` implements the one relation the scheduling policy consumes today: which logical processors share a physical core, with each core's efficiency class, read from the operating system's CPU-set information. The rest of this model is added when a policy consumes it.
 
 CPU topology is a relation graph, not a single `LogicalProcessor -> Core -> Cluster` tree. The portable baseline is:
 

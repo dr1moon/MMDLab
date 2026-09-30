@@ -69,6 +69,9 @@ single-owner invariant is what makes each stage's write to the `FrameResource` s
 | RhiThread | a `Thread` running the `RhiThread` runnable | blocks in `renderToRhi.Pop()` | `Stop()` calls `renderToRhi.Close()` |
 
 - Scheduling is **fixed threads + blocking channels**, not a task graph. No thread polls or spins.
+- Each thread declares an execution class, and the platform scheduling policy maps it to a
+  priority and a processor placement (see "Execution Classes and Scheduling Policy" in
+  `Source/README.md`). No thread is pinned to a single processor.
 - Within a frame the GameThread forks one job per model onto `ComputeThreadsGroup` and joins
   before pushing the frame (`ParallelFor`). The jobs share only read-only inputs and each writes
   its own slice of the `FrameResource`, so the single-owner invariant below still holds: the
