@@ -69,6 +69,10 @@ single-owner invariant is what makes each stage's write to the `FrameResource` s
 | RhiThread | a `Thread` running the `RhiThread` runnable | blocks in `renderToRhi.Pop()` | `Stop()` calls `renderToRhi.Close()` |
 
 - Scheduling is **fixed threads + blocking channels**, not a task graph. No thread polls or spins.
+- Within a frame the GameThread forks one job per model onto `ComputeThreadsGroup` and joins
+  before pushing the frame (`ParallelFor`). The jobs share only read-only inputs and each writes
+  its own slice of the `FrameResource`, so the single-owner invariant below still holds: the
+  GameThread owns the resource for the whole fork-join.
 - Back-pressure comes from the pool: `GameThread` produces at most three frames ahead of the GPU.
 - Shutdown is explicit and upstream-first: stop `RenderThread`, then `RhiThread`. Each `Close()`
   wakes the blocked `Pop()`, which drains remaining frames, then returns `std::nullopt` and exits.

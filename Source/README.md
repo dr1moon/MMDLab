@@ -187,7 +187,9 @@ RhiThread                            - inverse kinematics
 
 An Animation System must not own an `AnimationThread`, and a Physics System must not own a `PhysicsThread`. They eventually submit independent CPU-bound jobs to `ComputeThreadsGroup` after their input contracts are ready. The Runtime Data Graph determines *when* work is eligible; the execution class and CPU budget determine *where* it runs.
 
-The static-mesh milestone does not create either threads group. It uses synchronous startup loading and the three ownership contexts only. Add `ComputeThreadsGroup` only when animation, decoding, or another measured CPU-bound workload has enough parallel work to justify it. Add `IoThreadsGroup` only if OS asynchronous I/O and completion dispatch cannot meet the required behavior by themselves.
+`ComputeThreadsGroup` (`Runtime/Core/ComputeThreadsGroup.h`) now exists because per-model evaluation is measured, independent, CPU-bound work: each frame the GameThread forks one `EvaluateModelFrame` per model (pose sampling, inverse kinematics, physics, the after-physics bones, skinning) and joins before projecting the frame. The only primitive is fork-join `ParallelFor`; there is no dependency graph, because a frame has no dependency branch between models. Each model owns its own Bullet world and writes only its own pre-sized slice of the frame snapshots, which is what makes the jobs independent. The GameThread claims jobs too, and a batch of one runs inline, so a one-model scene pays nothing for the group. `--compute-threads N` and `--io-threads N` override the sizes the CPU budget picks; `--compute-threads 0` keeps evaluation on the GameThread.
+
+`IoThreadsGroup` still performs cooked reads, PMX parsing, and texture decoding at startup. It is sized small (four workers) because frame work now belongs to the compute group; moving CPU decode out of it into compute jobs is the next step when loading becomes a measured bottleneck. Add OS asynchronous I/O only if the I/O group cannot meet the required behavior by itself.
 
 ### Future Execution Classes
 
