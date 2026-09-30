@@ -196,4 +196,40 @@ float4 PSMain(PSInput input) : SV_TARGET
 }
 )";
 
+// Pixel shader for the reflective floor: samples the offscreen reflection target (bound as a raw
+// root SRV at t6) at the fragment's screen position and tints it with the material's base color.
+// Opaque (mirror) in this pass; a glass variant adds blend and fresnel later.
+inline const char* ReflectPixelShaderSource = R"(
+cbuffer MaterialParams : register(b1)
+{
+    float4 baseColor; // rgb = diffuse tint.
+    float4 ambient;
+    float4 specular;
+    float4 params;
+};
+
+Texture2D reflectionTex : register(t6);
+SamplerState linearSampler : register(s0);
+
+struct PSInput
+{
+    float4 position : SV_POSITION;
+    float3 normal : NORMAL;
+    float2 uv : TEXCOORD0;
+    float2 uv1 : TEXCOORD1;
+};
+
+float4 ReflectPSMain(PSInput input) : SV_TARGET
+{
+    // The offscreen target matches the back buffer, so its own dimensions normalize the
+    // screen-space sample. The reflected view already mirrors the geometry below the floor, so the
+    // reflection is sampled directly at the fragment's screen position (no vertical flip).
+    uint2 dimensions;
+    reflectionTex.GetDimensions(dimensions.x, dimensions.y);
+    float2 screenUv = (input.position.xy + 0.5) / float2(dimensions);
+    float4 reflection = reflectionTex.Sample(linearSampler, screenUv);
+    return float4(reflection.rgb * baseColor.rgb, 1.0);
+}
+)";
+
 } // namespace MmdLab

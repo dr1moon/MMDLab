@@ -490,12 +490,12 @@ uint32_t RhiThread::Run()
                 lastLevelGeneration_ = batch.levelGeneration;
             }
 
-            // Capture only once the selected level has at least one resident instance; the
-            // async load may still be in flight on the first frame, which would capture an
-            // empty scene.
+            // Capture only once the selected level has actually loaded (its generation has
+            // bumped); the async load may still be in flight on the first frame, and the injected
+            // reflective floor makes `instances` non-empty before any model is resident.
             const bool captureThisFrame =
                 captureRequested_ && capture_ != nullptr && capture_->IsAvailable()
-                && !batch.instances.empty();
+                && !batch.instances.empty() && batch.levelGeneration != 0;
 
             if (captureThisFrame)
             {

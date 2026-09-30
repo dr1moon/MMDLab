@@ -4,6 +4,7 @@
 #include "Runtime/Asset/VmdFile.h"
 #include "Runtime/Core/Log.h"
 #include "Runtime/Core/Utf8.h"
+#include "Runtime/Scene/StaticFloor.h"
 
 #include <algorithm>
 #include <exception>
@@ -59,8 +60,9 @@ void World::LoadFromDirectory(
     }
 
     // Reserve the model pool so installs during the render loop never reallocate the vector the
-    // renderer holds spans into across frames.
-    registry_->Reserve(totalModels);
+    // renderer holds spans into across frames. The +1 is the procedural reflective floor, added
+    // by InjectReflectiveFloor before the loop starts.
+    registry_->Reserve(totalModels + 1);
 
     // Enqueue every model's parse, level by level so the initially-selected level's models get a
     // head start on the shared queue.
@@ -186,6 +188,7 @@ void World::FinishModel(const std::size_t levelIndex, const std::size_t modelSlo
     if (pending.completed == pending.models.size())
     {
         pending.loaded = true;
+        PositionReflectiveFloors(levelIndex);
         LogInfo("Asset", std::format("Level {} ready", levelIndex));
         if (levelIndex == selectedLevel_)
         {
@@ -222,6 +225,44 @@ void World::SetInstanceVisible(const std::size_t index, const bool visible)
         return;
     }
     instances[index].visible = visible;
+}
+
+void World::InjectReflectiveFloor()
+{
+    if (registry_ == nullptr || levels_.empty())
+    {
+        return;
+    }
+
+    const std::size_t modelIndex = registry_->AddModel(BuildReflectiveFloorModel());
+    for (Level& level : levels_)
+    {
+        ModelInstance instance;
+        instance.modelIndex = modelIndex;
+        instance.reflective = true;
+        level.instances.push_back(instance);
+    }
+}
+
+void World::PositionReflectiveFloors(const std::size_t levelIndex)
+{
+    Level& level = levels_[levelIndex];
+    for (ModelInstance& instance : level.instances)
+    {
+        if (!instance.reflective)
+        {
+            continue;
+        }
+        // Place the floor's top (its local y=0 plane) at the level's lowest bound, centered on
+        // the models' horizontal extent, so it sits directly under any character. The floor's own
+        // huge bounds are deliberately not folded into level framing.
+        instance.translation[0] = (level.boundsMin[0] + level.boundsMax[0]) * 0.5f;
+        instance.translation[1] = level.boundsMin[1];
+        instance.translation[2] = (level.boundsMin[2] + level.boundsMax[2]) * 0.5f;
+        instance.rotation[0] = 0.0f;
+        instance.rotation[1] = 0.0f;
+        instance.rotation[2] = 0.0f;
+    }
 }
 
 std::span<const ModelInstance> World::SelectedInstances() const

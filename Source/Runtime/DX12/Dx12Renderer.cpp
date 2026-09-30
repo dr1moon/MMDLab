@@ -68,6 +68,7 @@ Dx12Renderer::Dx12Renderer(
     CreatePipelineState();
     CreateRenderTargetViews();
     CreateDepthBuffer();
+    CreateReflectionTarget();
     CreateImGuiSrvHeap();
     CreateConstantBuffer();
 
@@ -146,6 +147,7 @@ void Dx12Renderer::Resize(const std::uint32_t width, const std::uint32_t height)
         backBuffer.Reset();
     }
     depthBuffer_.Reset();
+    reflectionTarget_.Reset();
 
     swapChain_.Resize(width, height);
     width_ = width;
@@ -153,6 +155,20 @@ void Dx12Renderer::Resize(const std::uint32_t width, const std::uint32_t height)
 
     CreateRenderTargetViews();
     CreateDepthBuffer();
+    CreateReflectionTarget();
+
+    // The reflection target was rebuilt; recreate each resident model's reflection SRV over the
+    // new resource (their heap slots are unchanged).
+    D3D12_SHADER_RESOURCE_VIEW_DESC reflectionSrv{};
+    reflectionSrv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    reflectionSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    reflectionSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    reflectionSrv.Texture2D.MipLevels = 1;
+    for (auto& entry : residentModels_)
+    {
+        device_.Get()->CreateShaderResourceView(reflectionTarget_.Get(), &reflectionSrv, entry.second.reflectionSrvCpu);
+    }
+
     LogInfo("Dx12", std::format("Resized render targets to {}x{}", width_, height_));
 }
 
@@ -314,6 +330,17 @@ void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& mode
         gpuModel.morphDeltaStaging[i]->Map(0, nullptr, &gpuModel.morphDeltaStagingMapped[i]);
     }
 
+    // Reflection-texture SRV in the trailing slot, sampled by the reflective-floor pixel shader.
+    // The view is recreated here and again on resize when the reflection target is rebuilt.
+    D3D12_SHADER_RESOURCE_VIEW_DESC reflectionSrv{};
+    reflectionSrv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    reflectionSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    reflectionSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    reflectionSrv.Texture2D.MipLevels = 1;
+    device_.Get()->CreateShaderResourceView(reflectionTarget_.Get(), &reflectionSrv, srvCpu);
+    gpuModel.reflectionSrvCpu = srvCpu;
+    gpuModel.reflectionSrvGpu = srvGpu;
+
     residentModels_.emplace(modelIndex, std::move(gpuModel));
 }
 
@@ -384,6 +411,25 @@ void Dx12Renderer::CreatePipelineState()
 
     pipelineStateCulled_ = createPipeline(D3D12_CULL_MODE_BACK);
     pipelineStateDoubleSided_ = createPipeline(D3D12_CULL_MODE_NONE);
+
+    // The reflective-floor pipeline: the same skinned vertex shader with a pixel shader that
+    // samples the offscreen reflection texture at screen-space UV. Culling is disabled because the
+    // floor is double-sided.
+    {
+        const auto reflectionPixelShader = ShaderCompiler::Compile(ReflectPixelShaderSource, "ReflectPSMain", "ps_5_1");
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC reflectionDescription = description;
+        reflectionDescription.PS = { reflectionPixelShader->GetBufferPointer(), reflectionPixelShader->GetBufferSize() };
+        reflectionDescription.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        const HRESULT result = device_.Get()->CreateGraphicsPipelineState(
+            &reflectionDescription, IID_PPV_ARGS(&reflectionPso_));
+        if (FAILED(result))
+        {
+            DumpD3d12Messages(device_.Get());
+            char message[128];
+            std::snprintf(message, sizeof(message), "Failed to create the reflection pipeline state (HRESULT 0x%08X).", static_cast<unsigned int>(result));
+            throw std::runtime_error(message);
+        }
+    }
 }
 
 void Dx12Renderer::CreateRenderTargetViews()
@@ -392,7 +438,8 @@ void Dx12Renderer::CreateRenderTargetViews()
     {
         D3D12_DESCRIPTOR_HEAP_DESC description{};
         description.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        description.NumDescriptors = kFrameCount;
+        // One RTV per back buffer plus the offscreen reflection target (created separately).
+        description.NumDescriptors = kFrameCount + 1;
         description.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         description.NodeMask = 0;
 
@@ -464,6 +511,48 @@ void Dx12Renderer::CreateDepthBuffer()
         depthBuffer_.Get(),
         nullptr,
         dsvHeap_->GetCPUDescriptorHandleForHeapStart());
+}
+
+void Dx12Renderer::CreateReflectionTarget()
+{
+    D3D12_HEAP_PROPERTIES heapProperties{};
+    heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = width_;
+    description.Height = height_;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    description.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue{};
+    clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    clearValue.Color[0] = 0.0f;
+    clearValue.Color[1] = 0.0f;
+    clearValue.Color[2] = 0.0f;
+    clearValue.Color[3] = 1.0f;
+
+    if (FAILED(device_.Get()->CreateCommittedResource(
+        &heapProperties,
+        D3D12_HEAP_FLAG_NONE,
+        &description,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &clearValue,
+        IID_PPV_ARGS(&reflectionTarget_))))
+    {
+        throw std::runtime_error("Failed to create the reflection render target.");
+    }
+
+    // Render-target view in the trailing slot of the RTV heap, after the swap-chain back buffers.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += static_cast<SIZE_T>(kFrameCount) * rtvDescriptorSize_;
+    device_.Get()->CreateRenderTargetView(reflectionTarget_.Get(), nullptr, rtvHandle);
+
+    reflectionTargetIsSrv_ = false;
 }
 
 void Dx12Renderer::CreateMeshBuffers(GpuModel& model, const Model& cpuModel)
@@ -606,10 +695,11 @@ DXGI_FORMAT ToDxgiFormat(const TextureFormat format)
 
 void Dx12Renderer::CreateTextures(GpuModel& model, const std::span<const Image> images)
 {
-    // One three-descriptor (base/toon/sphere) SRV bundle per material.
+    // One three-descriptor (base/toon/sphere) SRV bundle per material, plus the trailing slots
+    // for the per-model skinning/morph SRVs and the shared reflection-texture SRV.
     D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
     heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3 + 2 * kFrameCount + 1;
+    heapDescription.NumDescriptors = static_cast<UINT>(model.materials.size()) * 3 + 2 * kFrameCount + 2;
     heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heapDescription.NodeMask = 0;
 
@@ -849,6 +939,23 @@ void Dx12Renderer::CreateConstantBuffer()
         // Upload-heap buffers stay persistently mapped; UpdateCameraConstants() writes each frame.
         constantBuffers_[i]->Map(0, nullptr, &constantBufferMapped_[i]);
     }
+
+    // The reflection pass's camera buffer, allocated alongside the main one for the same size and
+    // lifetime; UpdateReflectionConstants() writes it.
+    for (std::uint32_t i = 0; i < kFrameCount; ++i)
+    {
+        if (FAILED(device_.Get()->CreateCommittedResource(
+            &uploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &description,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&reflectionConstantBuffers_[i]))))
+        {
+            throw std::runtime_error("Failed to create the reflection camera constant buffer.");
+        }
+        reflectionConstantBuffers_[i]->Map(0, nullptr, &reflectionConstantBufferMapped_[i]);
+    }
 }
 
 void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex, const Camera& camera)
@@ -886,6 +993,68 @@ void Dx12Renderer::UpdateCameraConstants(const std::uint32_t frameIndex, const C
     constants.cameraDirection[3] = 0.0f;
 
     std::memcpy(constantBufferMapped_[frameIndex], &constants, sizeof(constants));
+}
+
+void Dx12Renderer::UpdateReflectionConstants(
+    const std::uint32_t frameIndex,
+    const Camera& camera,
+    const float planePoint[3],
+    const float planeNormal[3])
+{
+    using namespace DirectX;
+
+    // The main camera's view matrix (the same construction UpdateCameraConstants uses).
+    const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
+        XMConvertToRadians(camera.rotation[0]),
+        XMConvertToRadians(camera.rotation[1]),
+        XMConvertToRadians(camera.rotation[2]));
+    const XMMATRIX translation = XMMatrixTranslation(
+        camera.position[0], camera.position[1], camera.position[2]);
+    const XMMATRIX view = XMMatrixInverse(nullptr, XMMatrixMultiply(rotation, translation));
+
+    const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+    const XMMATRIX projection = XMMatrixPerspectiveFovLH(
+        XMConvertToRadians(camera.fovDegrees), aspect, camera.nearPlane, camera.farPlane);
+
+    // Reflect the world across the floor plane, then view it: geometry above the plane appears
+    // mirrored below it, which is what a mirror shows. XMMatrixReflect takes the coefficients
+    // (a, b, c, d) of the plane ax + by + cz + d = 0.
+    const XMVECTOR normal = XMVector3Normalize(
+        XMVectorSet(planeNormal[0], planeNormal[1], planeNormal[2], 0.0f));
+    const float planeOffset = XMVectorGetX(XMVector3Dot(
+        normal, XMVectorSet(planePoint[0], planePoint[1], planePoint[2], 0.0f)));
+    const XMMATRIX reflect = XMMatrixReflect(XMVectorSet(
+        XMVectorGetX(normal), XMVectorGetY(normal), XMVectorGetZ(normal), -planeOffset));
+    // Row-vector: reflect the point first, then apply the view. Its determinant is negative, so
+    // the reflection pass disables back-face culling to compensate for the flipped winding.
+    const XMMATRIX reflectedView = XMMatrixMultiply(reflect, view);
+
+    CameraConstants constants{};
+    XMFLOAT4X4 storage;
+    XMStoreFloat4x4(&storage, XMMatrixMultiply(reflectedView, projection));
+    std::memcpy(constants.viewProjection, &storage, sizeof(storage));
+    XMStoreFloat4x4(&storage, reflectedView);
+    std::memcpy(constants.view, &storage, sizeof(storage));
+
+    constants.lightDirection[0] = -0.3f; // Same fixed key light as the main camera.
+    constants.lightDirection[1] = -0.8f;
+    constants.lightDirection[2] = -0.6f;
+
+    // View direction for the specular term, reflected across the plane to match the mirrored view.
+    const XMVECTOR forward = XMVector3Rotate(
+        XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f),
+        XMQuaternionRotationRollPitchYaw(
+            XMConvertToRadians(camera.rotation[0]),
+            XMConvertToRadians(camera.rotation[1]),
+            XMConvertToRadians(camera.rotation[2])));
+    const XMVECTOR reflectedForward = XMVectorSubtract(
+        forward, XMVectorScale(normal, 2.0f * XMVectorGetX(XMVector3Dot(normal, forward))));
+    constants.cameraDirection[0] = XMVectorGetX(reflectedForward);
+    constants.cameraDirection[1] = XMVectorGetY(reflectedForward);
+    constants.cameraDirection[2] = XMVectorGetZ(reflectedForward);
+    constants.cameraDirection[3] = 0.0f;
+
+    std::memcpy(reflectionConstantBufferMapped_[frameIndex], &constants, sizeof(constants));
 }
 
 void Dx12Renderer::WaitForPreviousFrame(const std::uint32_t frameIndex)
@@ -950,6 +1119,171 @@ void Dx12Renderer::FreeImGuiSrvDescriptor(const D3D12_CPU_DESCRIPTOR_HANDLE cpu,
     imguiSrvFreeIndices_.push_back(index);
 }
 
+void Dx12Renderer::UploadPerFrameBuffers(
+    const std::uint32_t frameIndex,
+    const std::span<const ModelInstance> instances,
+    const std::span<const Model> models,
+    const std::span<const DirectX::XMFLOAT4X4> bonePalette,
+    const std::span<const std::uint32_t> bonePaletteOffsets,
+    const std::span<const float> morphDeltas,
+    const std::span<const std::uint32_t> morphDeltaOffsets)
+{
+    for (const ModelInstance& instance : instances)
+    {
+        if (!instance.visible || instance.modelIndex >= models.size())
+        {
+            continue;
+        }
+        const auto resident = residentModels_.find(instance.modelIndex);
+        if (resident == residentModels_.end())
+        {
+            continue;
+        }
+
+        const GpuModel& gpuModel = resident->second;
+        const std::uint32_t modelIndex = static_cast<std::uint32_t>(instance.modelIndex);
+
+        // Upload this model's skinning palette: write the staging buffer, copy it into the
+        // default-heap bone buffer on the GPU, and transition the buffer back to SRV read.
+        if (modelIndex + 1 < bonePaletteOffsets.size())
+        {
+            const std::uint32_t first = bonePaletteOffsets[modelIndex];
+            const std::uint32_t count = bonePaletteOffsets[modelIndex + 1] - first;
+            if (count > 0 && first + count <= bonePalette.size())
+            {
+                std::memcpy(
+                    gpuModel.boneMatricesStagingMapped[frameIndex],
+                    bonePalette.data() + first,
+                    static_cast<std::size_t>(count) * sizeof(DirectX::XMFLOAT4X4));
+
+                D3D12_RESOURCE_BARRIER boneBarrier{};
+                boneBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                boneBarrier.Transition.pResource = gpuModel.boneMatricesBuffers[frameIndex].Get();
+                boneBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                commandList_->ResourceBarrier(1, &boneBarrier);
+
+                commandList_->CopyBufferRegion(
+                    gpuModel.boneMatricesBuffers[frameIndex].Get(), 0,
+                    gpuModel.boneMatricesStaging[frameIndex].Get(), 0,
+                    static_cast<std::uint64_t>(count) * sizeof(DirectX::XMFLOAT4X4));
+
+                boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                commandList_->ResourceBarrier(1, &boneBarrier);
+            }
+        }
+
+        // Upload this model's morph deltas (zero when no active vertex morphs).
+        if (modelIndex + 1 < morphDeltaOffsets.size())
+        {
+            const std::uint32_t deltaFirst = morphDeltaOffsets[modelIndex];
+            const std::uint32_t deltaCount = morphDeltaOffsets[modelIndex + 1] - deltaFirst;
+            if (deltaCount > 0 && deltaFirst + deltaCount <= morphDeltas.size())
+            {
+                std::memcpy(
+                    gpuModel.morphDeltaStagingMapped[frameIndex],
+                    morphDeltas.data() + deltaFirst,
+                    static_cast<std::size_t>(deltaCount) * sizeof(float));
+
+                D3D12_RESOURCE_BARRIER morphBarrier{};
+                morphBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                morphBarrier.Transition.pResource = gpuModel.morphDeltaBuffers[frameIndex].Get();
+                morphBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                commandList_->ResourceBarrier(1, &morphBarrier);
+
+                commandList_->CopyBufferRegion(
+                    gpuModel.morphDeltaBuffers[frameIndex].Get(), 0,
+                    gpuModel.morphDeltaStaging[frameIndex].Get(), 0,
+                    static_cast<std::uint64_t>(deltaCount) * sizeof(float));
+
+                morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                commandList_->ResourceBarrier(1, &morphBarrier);
+            }
+        }
+    }
+}
+
+void Dx12Renderer::RenderSceneView(
+    const std::uint32_t frameIndex,
+    const std::span<const ModelInstance> instances,
+    const std::span<const Model> models,
+    const D3D12_GPU_VIRTUAL_ADDRESS cameraCbv,
+    const bool skipReflective)
+{
+    commandList_->SetGraphicsRootSignature(rootSignature_.Get());
+    commandList_->SetGraphicsRootConstantBufferView(0, cameraCbv);
+    commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    for (const ModelInstance& instance : instances)
+    {
+        if (!instance.visible || instance.modelIndex >= models.size())
+        {
+            continue;
+        }
+        if (skipReflective && instance.reflective)
+        {
+            continue; // The reflective surface is drawn in the main pass, not its own reflection.
+        }
+        const auto resident = residentModels_.find(instance.modelIndex);
+        if (resident == residentModels_.end())
+        {
+            continue; // Not resident; built on the level switch before this frame.
+        }
+
+        const Model& cpuModel = models[instance.modelIndex];
+        const GpuModel& gpuModel = resident->second;
+
+        // Per-instance world transform, stored column-major for HLSL mul(world, pos).
+        DirectX::XMFLOAT4X4 worldStorage;
+        DirectX::XMStoreFloat4x4(&worldStorage, InstanceWorldMatrix(instance));
+        commandList_->SetGraphicsRoot32BitConstants(3, 16, &worldStorage, 0);
+
+        ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
+        commandList_->SetDescriptorHeaps(1, descriptorHeaps);
+        commandList_->SetGraphicsRootDescriptorTable(4, gpuModel.boneMatricesSrv[frameIndex]);
+        commandList_->SetGraphicsRootDescriptorTable(5, gpuModel.refBonesSrv);
+        commandList_->SetGraphicsRootDescriptorTable(7, gpuModel.morphDeltaSrv[frameIndex]);
+
+        D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningView };
+        commandList_->IASetVertexBuffers(0, 2, vertexViews);
+        commandList_->IASetIndexBuffer(&gpuModel.indexView);
+
+        if (instance.reflective)
+        {
+            // The reflection texture SRV lives in this model's own SRV heap (already bound above).
+            commandList_->SetGraphicsRootDescriptorTable(8, gpuModel.reflectionSrvGpu);
+        }
+
+        for (const DrawPacket& packet : cpuModel.mesh.drawPackets)
+        {
+            const MMDToonMaterial& material = gpuModel.materials[packet.materialIndex];
+            ID3D12PipelineState* pipelineState = nullptr;
+            if (instance.reflective)
+            {
+                pipelineState = reflectionPso_.Get();
+            }
+            else if (skipReflective)
+            {
+                pipelineState = pipelineStateDoubleSided_.Get(); // Mirrored view flips winding.
+            }
+            else
+            {
+                pipelineState = (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get();
+            }
+            commandList_->SetPipelineState(pipelineState);
+            commandList_->SetGraphicsRoot32BitConstants(1, 16, &gpuModel.materialParams[packet.materialIndex], 0);
+            commandList_->SetGraphicsRootDescriptorTable(2, gpuModel.materialSrvBundles[packet.materialIndex]);
+            commandList_->SetGraphicsRoot32BitConstant(6, packet.refBoneOffset, 0);
+            commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
+        }
+    }
+}
+
 std::uint64_t Dx12Renderer::Render(
     const std::span<const ModelInstance> instances,
     const std::span<const Model> models,
@@ -983,142 +1317,92 @@ std::uint64_t Dx12Renderer::Render(
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     commandList_->ResourceBarrier(1, &barrier);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += static_cast<SIZE_T>(frameIndex) * rtvDescriptorSize_;
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+    backBufferRtv.ptr += static_cast<SIZE_T>(frameIndex) * rtvDescriptorSize_;
+    D3D12_CPU_DESCRIPTOR_HANDLE reflectionRtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+    reflectionRtv.ptr += static_cast<SIZE_T>(kFrameCount) * rtvDescriptorSize_;
     const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvHeap_->GetCPUDescriptorHandleForHeapStart();
-    commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
-
     const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    commandList_->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    D3D12_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(width_);
+    viewport.Height = static_cast<float>(height_);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    commandList_->RSSetViewports(1, &viewport);
+
+    D3D12_RECT scissor{};
+    scissor.right = static_cast<LONG>(width_);
+    scissor.bottom = static_cast<LONG>(height_);
+    commandList_->RSSetScissorRects(1, &scissor);
 
     if (!instances.empty())
     {
-        UpdateCameraConstants(frameIndex, camera);
-
-        D3D12_VIEWPORT viewport{};
-        viewport.Width = static_cast<float>(width_);
-        viewport.Height = static_cast<float>(height_);
-        viewport.MinDepth = 0.0f;
-        viewport.MaxDepth = 1.0f;
-        commandList_->RSSetViewports(1, &viewport);
-
-        D3D12_RECT scissor{};
-        scissor.right = static_cast<LONG>(width_);
-        scissor.bottom = static_cast<LONG>(height_);
-        commandList_->RSSetScissorRects(1, &scissor);
-
-        commandList_->SetGraphicsRootSignature(rootSignature_.Get());
-        commandList_->SetGraphicsRootConstantBufferView(0, constantBuffers_[frameIndex]->GetGPUVirtualAddress());
-        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
+        // Derive the reflection plane from the reflective floor instance: the point is the
+        // instance translation and the normal is its local +Y rotated into world space (identity
+        // rotation for the floor, so a horizontal plane).
+        float planePoint[3] = { 0.0f, 0.0f, 0.0f };
+        float planeNormal[3] = { 0.0f, 1.0f, 0.0f };
+        bool hasReflective = false;
         for (const ModelInstance& instance : instances)
         {
-            if (!instance.visible || instance.modelIndex >= models.size())
+            if (!instance.reflective || !instance.visible)
             {
                 continue;
             }
-            const auto resident = residentModels_.find(instance.modelIndex);
-            if (resident == residentModels_.end())
-            {
-                continue; // Not resident; built on the level switch before this frame.
-            }
-
-            const Model& cpuModel = models[instance.modelIndex];
-            const GpuModel& gpuModel = resident->second;
-
-            // Per-instance world transform, stored column-major for HLSL mul(world, pos).
-            DirectX::XMFLOAT4X4 worldStorage;
-            // Stored column-major so HLSL mul(world, pos) reads it directly.
-            DirectX::XMStoreFloat4x4(&worldStorage, InstanceWorldMatrix(instance));
-            commandList_->SetGraphicsRoot32BitConstants(3, 16, &worldStorage, 0);
-
-            // Upload this model's skinning palette: write the staging buffer, copy it into the
-            // default-heap bone buffer on the GPU, and transition the buffer back to SRV read.
-            const std::uint32_t modelIndex = static_cast<std::uint32_t>(instance.modelIndex);
-            if (modelIndex + 1 < bonePaletteOffsets.size())
-            {
-                const std::uint32_t first = bonePaletteOffsets[modelIndex];
-                const std::uint32_t count = bonePaletteOffsets[modelIndex + 1] - first;
-                if (count > 0 && first + count <= bonePalette.size())
-                {
-                    std::memcpy(
-                        gpuModel.boneMatricesStagingMapped[frameIndex],
-                        bonePalette.data() + first,
-                        static_cast<std::size_t>(count) * sizeof(DirectX::XMFLOAT4X4));
-
-                    D3D12_RESOURCE_BARRIER boneBarrier{};
-                    boneBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    boneBarrier.Transition.pResource = gpuModel.boneMatricesBuffers[frameIndex].Get();
-                    boneBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-                    commandList_->ResourceBarrier(1, &boneBarrier);
-
-                    commandList_->CopyBufferRegion(
-                        gpuModel.boneMatricesBuffers[frameIndex].Get(), 0,
-                        gpuModel.boneMatricesStaging[frameIndex].Get(), 0,
-                        static_cast<std::uint64_t>(count) * sizeof(DirectX::XMFLOAT4X4));
-
-                    boneBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                    boneBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    commandList_->ResourceBarrier(1, &boneBarrier);
-                }
-            }
-
-            // Upload this model's morph deltas (zero when no active vertex morphs), then bind the
-            // SRV the vertex shader reads before skinning.
-            if (modelIndex + 1 < morphDeltaOffsets.size())
-            {
-                const std::uint32_t deltaFirst = morphDeltaOffsets[modelIndex];
-                const std::uint32_t deltaCount = morphDeltaOffsets[modelIndex + 1] - deltaFirst;
-                if (deltaCount > 0 && deltaFirst + deltaCount <= morphDeltas.size())
-                {
-                    std::memcpy(
-                        gpuModel.morphDeltaStagingMapped[frameIndex],
-                        morphDeltas.data() + deltaFirst,
-                        static_cast<std::size_t>(deltaCount) * sizeof(float));
-
-                    D3D12_RESOURCE_BARRIER morphBarrier{};
-                    morphBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    morphBarrier.Transition.pResource = gpuModel.morphDeltaBuffers[frameIndex].Get();
-                    morphBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-                    commandList_->ResourceBarrier(1, &morphBarrier);
-
-                    commandList_->CopyBufferRegion(
-                        gpuModel.morphDeltaBuffers[frameIndex].Get(), 0,
-                        gpuModel.morphDeltaStaging[frameIndex].Get(), 0,
-                        static_cast<std::uint64_t>(deltaCount) * sizeof(float));
-
-                    morphBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                    morphBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    commandList_->ResourceBarrier(1, &morphBarrier);
-                }
-            }
-
-            ID3D12DescriptorHeap* descriptorHeaps[] = { gpuModel.srvHeap.Get() };
-            commandList_->SetDescriptorHeaps(1, descriptorHeaps);
-            commandList_->SetGraphicsRootDescriptorTable(4, gpuModel.boneMatricesSrv[frameIndex]);
-            commandList_->SetGraphicsRootDescriptorTable(5, gpuModel.refBonesSrv);
-            commandList_->SetGraphicsRootDescriptorTable(7, gpuModel.morphDeltaSrv[frameIndex]);
-
-            D3D12_VERTEX_BUFFER_VIEW vertexViews[] = { gpuModel.vertexView, gpuModel.skinningView };
-            commandList_->IASetVertexBuffers(0, 2, vertexViews);
-            commandList_->IASetIndexBuffer(&gpuModel.indexView);
-
-            for (const DrawPacket& packet : cpuModel.mesh.drawPackets)
-            {
-                const MMDToonMaterial& material = gpuModel.materials[packet.materialIndex];
-                commandList_->SetPipelineState(
-                    (material.flags & 0x01) != 0 ? pipelineStateDoubleSided_.Get() : pipelineStateCulled_.Get());
-                commandList_->SetGraphicsRoot32BitConstants(1, 16, &gpuModel.materialParams[packet.materialIndex], 0);
-                commandList_->SetGraphicsRootDescriptorTable(2, gpuModel.materialSrvBundles[packet.materialIndex]);
-                commandList_->SetGraphicsRoot32BitConstant(6, packet.refBoneOffset, 0);
-                commandList_->DrawIndexedInstanced(packet.indexCount, 1, packet.firstIndex, 0, 0);
-            }
+            planePoint[0] = instance.translation[0];
+            planePoint[1] = instance.translation[1];
+            planePoint[2] = instance.translation[2];
+            const DirectX::XMVECTOR up = DirectX::XMVector3Normalize(DirectX::XMVector3Rotate(
+                DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f),
+                DirectX::XMQuaternionRotationRollPitchYaw(
+                    DirectX::XMConvertToRadians(instance.rotation[0]),
+                    DirectX::XMConvertToRadians(instance.rotation[1]),
+                    DirectX::XMConvertToRadians(instance.rotation[2]))));
+            planeNormal[0] = DirectX::XMVectorGetX(up);
+            planeNormal[1] = DirectX::XMVectorGetY(up);
+            planeNormal[2] = DirectX::XMVectorGetZ(up);
+            hasReflective = true;
+            break;
         }
+
+        UpdateCameraConstants(frameIndex, camera);
+        UploadPerFrameBuffers(frameIndex, instances, models, bonePalette, bonePaletteOffsets, morphDeltas, morphDeltaOffsets);
+
+        if (hasReflective)
+        {
+            UpdateReflectionConstants(frameIndex, camera, planePoint, planeNormal);
+
+            // Pass 1: render everything but the reflective floor into the offscreen reflection
+            // target from the mirrored camera.
+            if (reflectionTargetIsSrv_)
+            {
+                barrier.Transition.pResource = reflectionTarget_.Get();
+                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                commandList_->ResourceBarrier(1, &barrier);
+                reflectionTargetIsSrv_ = false;
+            }
+            commandList_->OMSetRenderTargets(1, &reflectionRtv, FALSE, &dsvHandle);
+            commandList_->ClearRenderTargetView(reflectionRtv, clearColor, 0, nullptr);
+            commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+            RenderSceneView(frameIndex, instances, models, reflectionConstantBuffers_[frameIndex]->GetGPUVirtualAddress(), /*skipReflective=*/true);
+
+            barrier.Transition.pResource = reflectionTarget_.Get();
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            commandList_->ResourceBarrier(1, &barrier);
+            reflectionTargetIsSrv_ = true;
+        }
+    }
+
+    // Pass 2: the main scene into the swap-chain back buffer, reflective floor included.
+    commandList_->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsvHandle);
+    commandList_->ClearRenderTargetView(backBufferRtv, clearColor, 0, nullptr);
+    commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    if (!instances.empty())
+    {
+        RenderSceneView(frameIndex, instances, models, constantBuffers_[frameIndex]->GetGPUVirtualAddress(), /*skipReflective=*/false);
     }
 
     if (uiDrawData != nullptr)
@@ -1128,6 +1412,7 @@ std::uint64_t Dx12Renderer::Render(
         ImGui_ImplDX12_RenderDrawData(uiDrawData, commandList_.Get());
     }
 
+    barrier.Transition.pResource = backBuffers_[frameIndex].Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     commandList_->ResourceBarrier(1, &barrier);

@@ -19,6 +19,10 @@ struct ModelInstance
     float translation[3] = { 0.0f, 0.0f, 0.0f };
     float rotation[3] = { 0.0f, 0.0f, 0.0f }; // Euler degrees; YXZ order (MMD convention).
     bool visible = true;
+    // A planar-reflective surface (the glass/mirror floor). The renderer derives the reflection
+    // plane from the instance transform and draws it in the main pass from an offscreen
+    // reflection, excluding it from that reflection pass.
+    bool reflective = false;
 };
 
 // An instance's world matrix: YXZ Euler rotation then translation, in DirectXMath row-vector

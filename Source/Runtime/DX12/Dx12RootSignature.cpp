@@ -8,7 +8,7 @@ namespace MmdLab
 {
 Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
 {
-    D3D12_ROOT_PARAMETER rootParameters[8]{};
+    D3D12_ROOT_PARAMETER rootParameters[9]{};
 
     // b0 (vertex + pixel): the camera constant buffer (view-projection, light, view dir).
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -90,6 +90,20 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     rootParameters[7].DescriptorTable.pDescriptorRanges = &morphRange;
     rootParameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    // t6 (pixel): the reflection texture, bound as a single-SRV descriptor table. A texture SRV
+    // cannot be a root descriptor, so it lives in the model's shader-visible SRV heap.
+    D3D12_DESCRIPTOR_RANGE reflectionRange{};
+    reflectionRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    reflectionRange.NumDescriptors = 1;
+    reflectionRange.BaseShaderRegister = 6;
+    reflectionRange.RegisterSpace = 0;
+    reflectionRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParameters[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[8].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[8].DescriptorTable.pDescriptorRanges = &reflectionRange;
+    rootParameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     // s0 (pixel): the texture sampler.
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -107,7 +121,7 @@ Dx12RootSignature::Dx12RootSignature(ID3D12Device* device)
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC description{};
-    description.NumParameters = 8;
+    description.NumParameters = 9;
     description.pParameters = rootParameters;
     description.NumStaticSamplers = 1;
     description.pStaticSamplers = &sampler;

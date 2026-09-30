@@ -137,6 +137,7 @@ int wmain(const int argc, wchar_t* argv[])
         MmdLab::ModelRegistry modelRegistry;
         MmdLab::World world;
         world.LoadFromDirectory(scanDirectory, modelRegistry, loadRequestQueue);
+        world.InjectReflectiveFloor();
 
         MmdLab::LogInfo("App", std::format("Scanning {}: {} level(s)",
             MmdLab::WideToUtf8(scanDirectory.wstring()), world.LevelCount()));

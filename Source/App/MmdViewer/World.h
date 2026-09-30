@@ -72,6 +72,11 @@ public:
     // model's GPU resources stay resident, and the renderer skips hidden instances per frame.
     void SetInstanceVisible(std::size_t index, bool visible);
 
+    // Builds a procedural reflective floor, installs it in the registry, and injects one
+    // `reflective` instance into every level. Each level positions its floor under its models
+    // when they finish loading. Call after LoadFromDirectory so the registry is set.
+    void InjectReflectiveFloor();
+
     // The selected level's instances, projected into each frame. Returns an empty span when
     // no level is loaded or the selected level has not finished loading.
     [[nodiscard]] std::span<const ModelInstance> SelectedInstances() const;
@@ -113,6 +118,7 @@ private:
     void OnModelParsed(ModelParseResult& result);
     void OnTextureDecoded(TextureDecodeResult& result);
     void FinishModel(std::size_t levelIndex, std::size_t modelSlot);
+    void PositionReflectiveFloors(std::size_t levelIndex);
 
     std::vector<Level> levels_;
     std::vector<PendingLevel> pending_;

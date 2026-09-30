@@ -116,6 +116,11 @@ private:
         std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> materialSrvBundles;
         std::vector<MaterialShaderParams> materialParams;
         std::span<const MMDToonMaterial> materials; // Immutable array, owned by the mesh asset.
+        // Reflection texture SRV, in the trailing slot of this model's SRV heap (a texture SRV
+        // cannot be a root descriptor). Sampled by the reflective-floor shader; the view is
+        // recreated when the reflection target is resized.
+        D3D12_CPU_DESCRIPTOR_HANDLE reflectionSrvCpu{};
+        D3D12_GPU_DESCRIPTOR_HANDLE reflectionSrvGpu{};
     };
 
     void WaitForPreviousFrame(std::uint32_t frameIndex);
@@ -129,6 +134,38 @@ private:
     void CreateTextures(GpuModel& model, std::span<const Image> images);
     void CreateConstantBuffer();
     void UpdateCameraConstants(std::uint32_t frameIndex, const Camera& camera);
+    // Writes the mirrored camera constants for the reflection pass: the eye/forward/up reflected
+    // across `planePoint`/`planeNormal`, with the same projection and light as the main camera.
+    void UpdateReflectionConstants(
+        std::uint32_t frameIndex,
+        const Camera& camera,
+        const float planePoint[3],
+        const float planeNormal[3]);
+
+    // Uploads each visible model's skinning palette and morph deltas once per frame (the two
+    // passes read the same buffers), then transitions them back to SRV read state.
+    void UploadPerFrameBuffers(
+        std::uint32_t frameIndex,
+        std::span<const ModelInstance> instances,
+        std::span<const Model> models,
+        std::span<const DirectX::XMFLOAT4X4> bonePalette,
+        std::span<const std::uint32_t> bonePaletteOffsets,
+        std::span<const float> morphDeltas,
+        std::span<const std::uint32_t> morphDeltaOffsets);
+
+    // Binds `cameraCbv` and draws the visible instances into the currently bound render target.
+    // When `skipReflective` is true the reflective floor is excluded (used for the reflection
+    // pass, which must not reflect the floor back onto itself).
+    void RenderSceneView(
+        std::uint32_t frameIndex,
+        std::span<const ModelInstance> instances,
+        std::span<const Model> models,
+        D3D12_GPU_VIRTUAL_ADDRESS cameraCbv,
+        bool skipReflective);
+
+    // Creates the offscreen reflection color target and its render-target view (in the trailing
+    // slot of the RTV heap). Recreated on resize.
+    void CreateReflectionTarget();
 
     Dx12Device device_;
     Dx12CommandQueue queue_;
@@ -137,9 +174,14 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateCulled_;       // CullMode = BACK.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateDoubleSided_;  // CullMode = NONE.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> reflectionPso_; // Reflective-floor pipeline (samples the offscreen target).
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap_;
     Microsoft::WRL::ComPtr<ID3D12Resource> depthBuffer_;
+    // Offscreen planar-reflection color target. Single-buffered: written and consumed within one
+    // frame's command list, so it needs no cross-frame double buffering (unlike the swap chain).
+    Microsoft::WRL::ComPtr<ID3D12Resource> reflectionTarget_;
+    bool reflectionTargetIsSrv_ = false; // True when reflectionTarget_ is in SRV state between frames.
     Microsoft::WRL::ComPtr<ID3D12Resource> backBuffers_[kFrameCount];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators_[kFrameCount];
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList_;
@@ -164,6 +206,11 @@ private:
     // Camera constant buffer, device-level and written per frame by UpdateCameraConstants().
     Microsoft::WRL::ComPtr<ID3D12Resource> constantBuffers_[kFrameCount];
     void* constantBufferMapped_[kFrameCount] = { nullptr, nullptr };
+    // Reflection-pass camera constant buffer, mirroring the main camera buffer. A separate buffer
+    // is required: writing the reflected view into the main buffer during recording would
+    // overwrite the main view before either pass reads it (the classic upload-heap hazard).
+    Microsoft::WRL::ComPtr<ID3D12Resource> reflectionConstantBuffers_[kFrameCount];
+    void* reflectionConstantBufferMapped_[kFrameCount] = { nullptr, nullptr };
     std::uint32_t srvDescriptorSize_ = 0;
 
     std::uint32_t width_ = 0;
