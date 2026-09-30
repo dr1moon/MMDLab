@@ -1,6 +1,5 @@
+#include "App/MmdViewer/ModelFrame.h"
 #include "App/MmdViewer/World.h"
-#include "Runtime/Animation/MorphPose.h"
-#include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Physics/PhysicsStepPolicy.h"
 #include "Runtime/Asset/AssetIo.h"
 #include "Runtime/Asset/ModelRegistry.h"
@@ -26,7 +25,9 @@
 #include <exception>
 #include <filesystem>
 #include <format>
+#include <span>
 #include <string>
+#include <vector>
 
 int wmain(const int argc, wchar_t* argv[])
 {
@@ -137,6 +138,9 @@ int wmain(const int argc, wchar_t* argv[])
         // GameThread role: apply UI selection changes, project the scene into each frame, and
         // produce one frame per iteration, throttled by the frame pool.
         MmdLab::FrameId frameId = 0;
+        // Per-model evaluation scratch, parallel to the registry models and reused across frames.
+        std::vector<MmdLab::ModelFrameScratch> modelScratch;
+        std::vector<MmdLab::ModelFrameStats> modelStats;
         std::uint32_t lastPoseGeneration = 0;
         std::uint32_t lastMotionGeneration = 0;
         float lastMotionFrames = 0.0f;
@@ -226,98 +230,79 @@ int wmain(const int argc, wchar_t* argv[])
             renderFrame.camera = world.GetCamera();
 
             // Evaluate each model's skinning palette and concatenate them in model-index order so
-            // the renderer slices per-model ranges from one frame-local snapshot. Phase 1 evaluates
-            // the bind pose, whose identity palette reproduces the static mesh; Phase 2 supplies an
-            // animated pose for the model a VMD motion targets.
+            // the renderer slices per-model ranges from one frame-local snapshot. Every model's
+            // slice is sized up front (bone, vertex, and body counts are fixed per model), so each
+            // evaluation writes only its own range and touches only its own scratch.
             const auto& models = modelRegistry.Models();
-            frame.bonePaletteSnapshot.clear();
-            frame.bonePaletteOffsetSnapshot.assign(models.size() + 1, 0);
-            frame.morphDeltaSnapshot.clear();
-            frame.morphDeltaOffsetSnapshot.assign(models.size() + 1, 0);
-            frame.physicsBodySnapshot.clear();
-            frame.physicsBodyOffsetSnapshot.assign(models.size() + 1, 0);
             MmdLab::PhysicsStats physicsStats;
             physicsStats.enabled = world.PhysicsEnabled();
             physicsStats.debugDraw = world.PhysicsDebugDraw();
             physicsStats.ground = world.PhysicsGround();
-            std::vector<DirectX::XMFLOAT4X4> palette;
-            std::vector<DirectX::XMMATRIX> worldScratch;
-            std::vector<DirectX::XMMATRIX> localScratch;
-            std::vector<float> morphWeights;
-            std::vector<float> resolvedWeights;
-            std::vector<float> morphDelta;
-            MmdLab::BonePose motionPose;
-            std::vector<bool> ikEnabled;
+            frame.bonePaletteOffsetSnapshot.assign(models.size() + 1, 0);
+            frame.morphDeltaOffsetSnapshot.assign(models.size() + 1, 0);
+            frame.physicsBodyOffsetSnapshot.assign(models.size() + 1, 0);
+            for (std::size_t m = 0; m < models.size(); ++m)
+            {
+                const MmdLab::Model& model = models[m];
+                const MmdLab::PhysicsScene* physics = world.PhysicsFor(m);
+                const std::size_t bodies = physics != nullptr && physicsStats.debugDraw ? physics->BodyCount() : 0;
+                frame.bonePaletteOffsetSnapshot[m + 1] = frame.bonePaletteOffsetSnapshot[m]
+                    + static_cast<std::uint32_t>(model.skeleton.bones.size());
+                frame.morphDeltaOffsetSnapshot[m + 1] = frame.morphDeltaOffsetSnapshot[m]
+                    + static_cast<std::uint32_t>(model.mesh.vertices.size() * 3);
+                frame.physicsBodyOffsetSnapshot[m + 1] = frame.physicsBodyOffsetSnapshot[m]
+                    + static_cast<std::uint32_t>(bodies);
+                if (physics != nullptr)
+                {
+                    physicsStats.bodyCount += static_cast<std::uint32_t>(physics->BodyCount());
+                    physicsStats.constraintCount += static_cast<std::uint32_t>(model.physics.constraints.size());
+                }
+            }
+            frame.bonePaletteSnapshot.resize(frame.bonePaletteOffsetSnapshot.back());
+            frame.morphDeltaSnapshot.resize(frame.morphDeltaOffsetSnapshot.back());
+            frame.physicsBodySnapshot.resize(frame.physicsBodyOffsetSnapshot.back());
+            modelScratch.resize(models.size());
+            modelStats.assign(models.size(), {});
+
             // Physics freezes while paused, follows a short timeline scrub, and resets on a new
             // motion or a long jump instead of simulating it.
             const MmdLab::VmdAnimator& animator = world.Animator();
             const bool motionChanged = animator.MotionGeneration() != lastMotionGeneration;
             const bool seeked = !motionChanged && animator.PoseGeneration() != lastPoseGeneration;
-            MmdLab::PhysicsStep physicsStep = MmdLab::ResolvePhysicsStep(motionChanged, seeked,
+            MmdLab::ModelFrameInput modelInput;
+            modelInput.animator = &animator;
+            modelInput.physicsStep = MmdLab::ResolvePhysicsStep(motionChanged, seeked,
                 !animator.HasMotion() || animator.IsPlaying(), lastMotionFrames, animator.TimeFrames(), deltaTime);
-            physicsStep.reset = world.ConsumePhysicsReset() || physicsStep.reset;
+            modelInput.physicsStep.reset = world.ConsumePhysicsReset() || modelInput.physicsStep.reset;
+            modelInput.physicsEnabled = physicsStats.enabled;
+            modelInput.physicsDebugDraw = physicsStats.debugDraw;
             lastMotionGeneration = animator.MotionGeneration();
             lastPoseGeneration = animator.PoseGeneration();
             lastMotionFrames = animator.TimeFrames();
-            for (std::size_t m = 0; m < models.size(); ++m)
+
+            const auto evaluateModel = [&](const std::size_t m)
             {
-                const MmdLab::Model& model = models[m];
-                if (world.Animator().HasMotion())
+                const auto slice = [](auto& snapshot, const std::vector<std::uint32_t>& offsets, const std::size_t i)
                 {
-                    world.Animator().SamplePose(model.skeleton, model.bindPose, motionPose);
-                    world.Animator().SampleIkEnabled(model.skeleton, ikEnabled);
-                    // Sample and resolve morphs; bone morphs fold into the pose before skeleton
-                    // evaluation so their offsets reach the skinning palette.
-                    world.Animator().SampleMorphWeights(model.morphs, morphWeights);
-                    MmdLab::ResolveMorphWeights(model.morphs, morphWeights, resolvedWeights);
-                    MmdLab::ApplyBoneMorphs(model.morphs, resolvedWeights, motionPose);
-                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, &motionPose, worldScratch, localScratch, &ikEnabled);
-                }
-                else
+                    return std::span(snapshot).subspan(offsets[i], offsets[i + 1] - offsets[i]);
+                };
+                MmdLab::ModelFrameOutput output;
+                output.palette = slice(frame.bonePaletteSnapshot, frame.bonePaletteOffsetSnapshot, m);
+                output.morphDeltas = slice(frame.morphDeltaSnapshot, frame.morphDeltaOffsetSnapshot, m);
+                output.physicsBodies = slice(frame.physicsBodySnapshot, frame.physicsBodyOffsetSnapshot, m);
+                modelStats[m] = MmdLab::EvaluateModelFrame(
+                    models[m], world.PhysicsFor(m), modelInput, modelScratch[m], output);
+            };
+            {
+                ZoneScopedN("GameThread.EvaluateModels");
+                for (std::size_t m = 0; m < models.size(); ++m)
                 {
-                    MmdLab::EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, worldScratch, localScratch);
-                    ikEnabled.clear();
-                    resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
+                    evaluateModel(m);
                 }
-
-                // Physics runs between the animated pose and skinning: it moves the follow-bone
-                // colliders, steps, and overrides the simulated bones (hair, cloth, accessories).
-                MmdLab::PhysicsScene* physics = world.PhysicsFor(m);
-                if (physics != nullptr && physicsStats.enabled)
-                {
-                    const auto physicsStart = std::chrono::steady_clock::now();
-                    if (physicsStep.reset)
-                    {
-                        physics->Reset(worldScratch);
-                    }
-                    physics->Simulate(physicsStep.deltaSeconds, worldScratch);
-                    physicsStats.simulateMilliseconds += std::chrono::duration<float, std::milli>(
-                        std::chrono::steady_clock::now() - physicsStart).count();
-                }
-                if (physics != nullptr)
-                {
-                    physicsStats.bodyCount += static_cast<std::uint32_t>(physics->BodyCount());
-                    physicsStats.constraintCount += static_cast<std::uint32_t>(model.physics.constraints.size());
-                    if (physicsStats.debugDraw)
-                    {
-                        physics->AppendDebugBodies(frame.physicsBodySnapshot);
-                    }
-                }
-                frame.physicsBodyOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.physicsBodySnapshot.size());
-                // PMX PhysicsAfterDeform bones (and their IK and grants) follow the simulation.
-                MmdLab::EvaluateBoneWorldAfterPhysics(model.skeleton, model.bindPose, localScratch, worldScratch,
-                    ikEnabled.empty() ? nullptr : &ikEnabled);
-                MmdLab::BuildSkinningPalette(model.bindPose, worldScratch, palette);
-
-                // Accumulate active vertex morphs into a dense per-vertex position delta (all
-                // zeros with no motion), so the renderer uploads and applies it in the shader.
-                morphDelta.assign(model.mesh.vertices.size() * 3, 0.0f);
-                MmdLab::AccumulateVertexMorphDeltas(model.morphs, resolvedWeights, morphDelta);
-                frame.morphDeltaSnapshot.insert(frame.morphDeltaSnapshot.end(), morphDelta.begin(), morphDelta.end());
-                frame.morphDeltaOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.morphDeltaSnapshot.size());
-
-                frame.bonePaletteSnapshot.insert(frame.bonePaletteSnapshot.end(), palette.begin(), palette.end());
-                frame.bonePaletteOffsetSnapshot[m + 1] = static_cast<std::uint32_t>(frame.bonePaletteSnapshot.size());
+            }
+            for (const MmdLab::ModelFrameStats& stats : modelStats)
+            {
+                physicsStats.simulateMilliseconds += stats.simulateMilliseconds;
             }
             renderFrame.bonePalette = frame.bonePaletteSnapshot;
             renderFrame.bonePaletteOffsets = frame.bonePaletteOffsetSnapshot;

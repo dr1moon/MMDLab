@@ -5,6 +5,7 @@
 #include <DirectXMath.h>
 
 #include <cstddef>
+#include <span>
 #include <vector>
 
 namespace MmdLab
@@ -81,6 +82,13 @@ void BuildSkinningPalette(
     const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& world,
     std::vector<DirectX::XMFLOAT4X4>& outPalette);
+
+// As above, into a caller-sized slice (outPalette.size() == world.size()), such as one model's
+// range of a frame's concatenated palette.
+void BuildSkinningPalette(
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& world,
+    std::span<DirectX::XMFLOAT4X4> outPalette);
 
 // EvaluateBoneWorld followed by BuildSkinningPalette, for callers without physics.
 // Evaluates the skinning palette (world_i * inverseBind_i) for every bone, ready for the vertex

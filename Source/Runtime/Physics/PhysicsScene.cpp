@@ -4,6 +4,7 @@
 
 #include <btBulletDynamicsCommon.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -438,12 +439,13 @@ DirectX::XMMATRIX PhysicsScene::BodyWorld(const std::size_t index) const
     return FromBullet(transform);
 }
 
-void PhysicsScene::AppendDebugBodies(std::vector<PhysicsDebugBody>& out) const
+void PhysicsScene::WriteDebugBodies(const std::span<PhysicsDebugBody> out) const
 {
-    out.reserve(out.size() + impl_->bodies.size());
-    for (const Impl::Body& body : impl_->bodies)
+    const std::size_t count = std::min(out.size(), impl_->bodies.size());
+    for (std::size_t i = 0; i < count; ++i)
     {
-        PhysicsDebugBody debug;
+        const Impl::Body& body = impl_->bodies[i];
+        PhysicsDebugBody& debug = out[i];
         btTransform transform;
         body.motionState->getWorldTransform(transform);
         DirectX::XMStoreFloat4x4(&debug.world, FromBullet(transform));
@@ -453,7 +455,6 @@ void PhysicsScene::AppendDebugBodies(std::vector<PhysicsDebugBody>& out) const
         {
             debug.size[axis] = body.size[axis];
         }
-        out.push_back(debug);
     }
 }
 } // namespace MmdLab

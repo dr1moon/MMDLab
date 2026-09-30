@@ -810,12 +810,20 @@ void BuildSkinningPalette(
     const std::vector<DirectX::XMMATRIX>& world,
     std::vector<DirectX::XMFLOAT4X4>& outPalette)
 {
+    outPalette.resize(world.size());
+    BuildSkinningPalette(bindPose, world, std::span<DirectX::XMFLOAT4X4>(outPalette));
+}
+
+void BuildSkinningPalette(
+    const BindPose& bindPose,
+    const std::vector<DirectX::XMMATRIX>& world,
+    std::span<DirectX::XMFLOAT4X4> outPalette)
+{
     // Skinning matrix = inverseBind * world: re-project the model-space vertex into the bone's
     // bind space, then out through the (possibly IK- or physics-adjusted) world transform.
     ZoneScopedN("Animation.BuildSkinningPalette");
     using namespace DirectX;
-    outPalette.resize(world.size());
-    for (std::size_t i = 0; i < world.size(); ++i)
+    for (std::size_t i = 0; i < world.size() && i < outPalette.size(); ++i)
     {
         const XMMATRIX inverseBind = XMLoadFloat4x4(&bindPose.inverseBind[i]);
         XMStoreFloat4x4(&outPalette[i], XMMatrixMultiply(inverseBind, world[i]));

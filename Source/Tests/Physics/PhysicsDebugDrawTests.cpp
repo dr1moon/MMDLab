@@ -47,8 +47,8 @@ MMDLAB_TEST(Physics.DebugDraw, AppendsEveryBodyWithItsShapeModeAndTransform)
     asset.bodies = { sphere, box };
 
     const MmdLab::PhysicsScene scene(asset, skeleton, bind);
-    std::vector<MmdLab::PhysicsDebugBody> bodies;
-    scene.AppendDebugBodies(bodies);
+    std::vector<MmdLab::PhysicsDebugBody> bodies(scene.BodyCount());
+    scene.WriteDebugBodies(bodies);
 
     MMDLAB_CHECK_EQUAL(static_cast<std::size_t>(2), bodies.size());
     MMDLAB_CHECK(bodies[0].shape == MmdLab::BodyShape::Sphere);

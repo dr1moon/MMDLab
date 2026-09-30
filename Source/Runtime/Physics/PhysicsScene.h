@@ -7,6 +7,7 @@
 #include <DirectXMath.h>
 
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace MmdLab
@@ -49,8 +50,10 @@ public:
     // The current model-space transform of body `index` (for tests and debug drawing).
     [[nodiscard]] DirectX::XMMATRIX BodyWorld(std::size_t index) const;
 
-    // Appends every body's current transform, shape, and mode, for debug drawing.
-    void AppendDebugBodies(std::vector<PhysicsDebugBody>& out) const;
+    // Writes every body's current transform, shape, and mode, for debug drawing, into a
+    // caller-sized slice (out.size() == BodyCount()), such as one model's range of a frame's
+    // concatenated debug bodies.
+    void WriteDebugBodies(std::span<PhysicsDebugBody> out) const;
 
 private:
     struct Impl;

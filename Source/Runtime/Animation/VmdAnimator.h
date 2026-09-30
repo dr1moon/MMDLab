@@ -4,6 +4,7 @@
 #include "Runtime/Asset/Morph.h"
 #include "Runtime/Asset/VmdFile.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -67,7 +68,8 @@ private:
     bool playing_ = true;
     std::uint32_t poseGeneration_ = 0;
     std::uint32_t motionGeneration_ = 0;
-    // One-shot: log the VMD tracks that match no skeleton bone on the first sample.
-    mutable bool unmatchedLogged_ = false;
+    // One-shot: log the VMD tracks that match no skeleton bone on the first sample. Atomic
+    // because SamplePose is const and may run for several models at once.
+    mutable std::atomic<bool> unmatchedLogged_{ false };
 };
 } // namespace MmdLab

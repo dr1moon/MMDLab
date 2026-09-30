@@ -191,9 +191,8 @@ void VmdAnimator::SamplePose(
     // One-shot diagnostic: log every VMD track whose bone name matches no bone in the character's
     // skeleton (the model with enough bones to be the rig, not a static prop), so a motion/model
     // name mismatch is visible instead of silently leaving those bones rigid.
-    if (!unmatchedLogged_ && skeleton.bones.size() > 64)
+    if (skeleton.bones.size() > 64 && !unmatchedLogged_.exchange(true, std::memory_order_relaxed))
     {
-        unmatchedLogged_ = true;
         for (const VmdBoneTrack& track : motion_.boneTracks)
         {
             const bool matched = std::any_of(skeleton.bones.begin(), skeleton.bones.end(),
