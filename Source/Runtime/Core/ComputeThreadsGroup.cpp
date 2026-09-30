@@ -4,6 +4,7 @@
 #include "Runtime/Core/Runnable.h"
 #include "Runtime/Core/Thread.h"
 
+#include <algorithm>
 #include <atomic>
 #include <format>
 #include <string>
@@ -130,7 +131,15 @@ void ComputeThreadsGroup::ParallelFor(const std::size_t count, const std::functi
             batch_ = &batch;
             ++generation_;
         }
-        wake_.notify_all();
+        // Wake only as many workers as there are indices beyond the one the caller takes. Each
+        // wake costs the caller a kernel transition, so waking the whole group delays the caller's
+        // own first claim until the woken workers have already taken every index, and the surplus
+        // workers wake only to find nothing left.
+        const std::size_t wakeCount = std::min(count - 1, threads_.size());
+        for (std::size_t i = 0; i < wakeCount; ++i)
+        {
+            wake_.notify_one();
+        }
 
         // The submitting thread claims indices like a worker rather than idling while it waits.
         RunBatch(batch);
