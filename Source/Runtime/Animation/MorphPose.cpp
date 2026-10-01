@@ -12,23 +12,16 @@ namespace MmdLab
 void ResolveMorphWeights(
     const MorphSet& set,
     const std::vector<float>& directWeights,
-    std::vector<float>& outResolved)
+    std::vector<float>& outResolved,
+    std::vector<MorphResolveEntry>& stack)
 {
     ZoneScopedN("ResolveMorphWeights");
     outResolved.assign(set.morphs.size(), 0.0f);
+    stack.clear();
 
     // Group morphs are expanded with an explicit stack (rather than recursion) so a malformed
     // cyclic group morph cannot overflow the call stack; the depth bound turns a cycle into an
     // error instead of an infinite loop.
-    struct Entry
-    {
-        std::uint32_t index;
-        float weight;
-        int depth;
-    };
-    std::vector<Entry> stack;
-    stack.reserve(16);
-
     const std::size_t count = std::min(directWeights.size(), set.morphs.size());
     for (std::size_t i = 0; i < count; ++i)
     {
@@ -39,7 +32,7 @@ void ResolveMorphWeights(
         stack.push_back({ static_cast<std::uint32_t>(i), directWeights[i], 0 });
         while (!stack.empty())
         {
-            const Entry entry = stack.back();
+            const MorphResolveEntry entry = stack.back();
             stack.pop_back();
             if (entry.depth > 32)
             {

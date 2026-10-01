@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Animation/MorphPose.h"
 #include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/PhysicsAsset.h"
 #include "Runtime/Physics/PhysicsStepPolicy.h"
@@ -8,6 +9,8 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace MmdLab
@@ -25,8 +28,21 @@ struct ModelFrameScratch
     std::vector<bool> ikEnabled;
     std::vector<DirectX::XMMATRIX> world;
     std::vector<DirectX::XMMATRIX> local;
+    std::vector<DirectX::XMMATRIX> phaseLocal;
+    std::vector<IkLinkState> ikStates;
     std::vector<float> morphWeights;
     std::vector<float> resolvedWeights;
+    std::vector<MorphResolveEntry> morphStack;
+    // Precomputed VMD track indices, resolved once per motion generation so per-frame sampling
+    // indexes arrays instead of hashing bone/morph names. `boneTrack` is parallel to
+    // Skeleton::bones; `morphTrack` is parallel to MorphSet::morphs; -1 means "no track".
+    std::vector<std::int32_t> boneTrack;
+    std::vector<std::int32_t> morphTrack;
+    std::uint32_t cachedMotionGeneration = 0xFFFFFFFFu;
+    // Maps each IK chain's bone name to its chain index, resolved once per skeleton so
+    // SampleIkEnabled indexes chains instead of scanning and comparing names every frame.
+    std::unordered_map<std::string, std::size_t> ikChainByName;
+    bool ikChainByNameResolved = false;
 };
 
 // This frame's inputs shared by every model: read-only while the models evaluate.

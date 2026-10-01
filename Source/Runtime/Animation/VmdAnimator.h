@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -43,21 +44,40 @@ public:
     // Does nothing while paused (see SetPlaying).
     void Advance(float deltaSeconds);
 
-    // Samples the motion at the current time into a BonePose for `skeleton`. Bones with a
-    // matching track use the interpolated keyframes; the rest use their bind local transform.
-    void SamplePose(const Skeleton& skeleton, const BindPose& bindPose, BonePose& outPose) const;
+    // Samples the motion at the current time into a BonePose for `skeleton`. `boneTrack` is
+    // parallel to `skeleton.bones` and holds each bone's motion-track index, or -1 for a bone the
+    // motion does not animate; resolve it once per motion with ResolveBoneTrackIndices. Bones
+    // with a matching track use the interpolated keyframes; the rest keep their bind local.
+    void SamplePose(const Skeleton& skeleton, const BindPose& bindPose,
+        std::span<const std::int32_t> boneTrack, BonePose& outPose) const;
 
     // Samples the show/IK track at the current time into `outEnabled`, parallel to
-    // `skeleton.ikChains` (true = solve the chain). With no show/IK keyframe every chain defaults
-    // to enabled; IK on/off is discrete, so the most recent keyframe is held.
-    void SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& outEnabled) const;
+    // `skeleton.ikChains` (true = solve the chain). `ikChainByName` maps each chain's IK-bone name
+    // to its chain index, resolved once per skeleton (see ResolveIkChainByName). With no show/IK
+    // keyframe every chain defaults to enabled; IK on/off is discrete, so the most recent
+    // keyframe is held.
+    void SampleIkEnabled(const Skeleton& skeleton,
+        const std::unordered_map<std::string, std::size_t>& ikChainByName,
+        std::vector<bool>& outEnabled) const;
+
+    // Resolves each IK chain's bone name to its chain index, so SampleIkEnabled can index chains
+    // without scanning and comparing names every frame. `out` is cleared and rebuilt; call once
+    // per skeleton and reuse it.
+    void ResolveIkChainByName(const Skeleton& skeleton, std::unordered_map<std::string, std::size_t>& out) const;
 
     // Samples the morph tracks at the current time into `outWeights`, parallel to `set.morphs`
-    // (0 for a morph with no track). Morph weights are linearly interpolated between keyframes.
-    void SampleMorphWeights(const MorphSet& set, std::vector<float>& outWeights) const;
+    // (0 for a morph with no track). `morphTrack` is parallel to `set.morphs` and holds each
+    // morph's track index, or -1; resolve it once per motion with ResolveMorphTrackIndices.
+    void SampleMorphWeights(const MorphSet& set, std::span<const std::int32_t> morphTrack,
+        std::vector<float>& outWeights) const;
+
+    // Resolves each bone / morph name to its motion-track index (or -1 for no matching track, or
+    // a bone track with no keyframes), so per-frame sampling indexes arrays instead of hashing
+    // names. `out` is sized to match; call once per motion generation and reuse it.
+    void ResolveBoneTrackIndices(const Skeleton& skeleton, std::vector<std::int32_t>& out) const;
+    void ResolveMorphTrackIndices(const MorphSet& set, std::vector<std::int32_t>& out) const;
 
 private:
-    [[nodiscard]] const VmdBoneTrack* FindTrack(const std::string& boneName) const;
     [[nodiscard]] float SampleMorphWeight(const VmdMorphTrack& track) const;
 
     VmdMotion motion_;

@@ -16,8 +16,8 @@
 #include <DirectXMath.h>
 
 #include <cstdint>
+#include <memory>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 struct ImDrawData;
@@ -199,9 +199,10 @@ private:
     std::uint32_t imguiSrvDescriptorSize_ = 0;
     std::vector<std::uint32_t> imguiSrvFreeIndices_; // Free-list of imgui SRV descriptor slots.
 
-    // Resident GPU models, keyed by model index. Shared across levels: a model appearing in
-    // multiple levels is uploaded once.
-    std::unordered_map<std::size_t, GpuModel> residentModels_;
+    // Resident GPU models, indexed directly by model index (null for a model with no GPU
+    // resources yet). Model indices are dense registry indices, so a flat vector gives O(1) array
+    // access in the per-frame draw loop instead of an integer hash lookup.
+    std::vector<std::unique_ptr<GpuModel>> residentModels_;
 
     // Camera constant buffer, device-level and written per frame by UpdateCameraConstants().
     Microsoft::WRL::ComPtr<ID3D12Resource> constantBuffers_[kFrameCount];

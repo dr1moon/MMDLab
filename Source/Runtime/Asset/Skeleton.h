@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -72,16 +73,26 @@ struct IkChain
 };
 
 // The static bone hierarchy of a model, kept alongside the mesh so skeleton evaluation can walk
-// it. `children` is parallel to `bones`: children[i] lists the indices of the bones whose parent
-// is i, in file order. `ikChains` holds the IK constraints the PMX declared, sorted by their IK
-// bone's evaluation order. `deformOrder` lists every bone index sorted by (afterPhysics,
-// deformLayer, index); when it is empty (a hand-built skeleton), plain index order is used.
+// it. Child lists are compressed-sparse-row: bone b's children are
+// childrenFlat[childrenOffsets[b] .. childrenOffsets[b+1]) in file order, so traversal reads one
+// contiguous array instead of chasing a vector-of-vectors. `ikChains` holds the IK constraints
+// the PMX declared, sorted by their IK bone's evaluation order. `deformOrder` lists every bone
+// index sorted by (afterPhysics, deformLayer, index); when it is empty (a hand-built skeleton),
+// plain index order is used.
 struct Skeleton
 {
     std::vector<Bone> bones;
-    std::vector<std::vector<std::uint16_t>> children;
+    std::vector<std::uint16_t> childrenFlat;
+    std::vector<std::uint32_t> childrenOffsets; // Size == bones.size() + 1.
     std::vector<IkChain> ikChains;
     std::vector<std::uint16_t> deformOrder;
+
+    // The children of `bone` in file order. Requires bone < bones.size().
+    [[nodiscard]] std::span<const std::uint16_t> Children(const std::size_t bone) const
+    {
+        return std::span<const std::uint16_t>(childrenFlat).subspan(
+            childrenOffsets[bone], childrenOffsets[bone + 1] - childrenOffsets[bone]);
+    }
 };
 
 // Per-vertex linear-blend-skinning data, parallel to MeshAsset::vertices. Up to four bone

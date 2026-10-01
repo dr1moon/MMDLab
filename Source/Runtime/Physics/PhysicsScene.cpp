@@ -345,11 +345,8 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
         const std::uint16_t bone = stack.back();
         stack.pop_back();
         impl.order.push_back(bone);
-        if (bone < skeleton.children.size())
-        {
-            const std::vector<std::uint16_t>& children = skeleton.children[bone];
-            stack.insert(stack.end(), children.rbegin(), children.rend());
-        }
+        const std::span<const std::uint16_t> children = skeleton.Children(bone);
+        stack.insert(stack.end(), children.rbegin(), children.rend());
     }
 
     impl.boneBody.assign(boneCount, -1);

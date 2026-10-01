@@ -21,7 +21,7 @@ MmdLab::Skeleton MakeSingleBone()
     bone.name = "root";
     bone.tail[1] = 1.0f;
     skeleton.bones.push_back(std::move(bone));
-    skeleton.children.resize(1);
+    MmdLab::BuildChildren(skeleton);
     return skeleton;
 }
 } // namespace

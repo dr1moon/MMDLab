@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace MmdLab
@@ -66,11 +65,10 @@ struct Morph
     std::vector<GroupMorphItem> groupItems;
 };
 
-// The morph set of a model plus a name index, so a VMD morph track can look a morph up by its
-// UTF-8 name. The loader rebuilds `indexByName` once after `morphs` is populated.
+// The morph set of a model. VMD morph-track lookup is resolved once per motion by VmdAnimator
+// (which owns the motion's name -> track map), so no name index is kept here.
 struct MorphSet
 {
     std::vector<Morph> morphs;
-    std::unordered_map<std::string, std::size_t> indexByName;
 };
 } // namespace MmdLab

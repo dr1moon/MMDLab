@@ -3,19 +3,31 @@
 #include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/Morph.h"
 
+#include <cstdint>
 #include <span>
 #include <vector>
 
 namespace MmdLab
 {
+// One group-morph expansion entry for the explicit stack in ResolveMorphWeights. Held in the
+// caller's per-model scratch so the per-frame resolution does not allocate a fresh stack.
+struct MorphResolveEntry
+{
+    std::uint32_t index = 0;
+    float weight = 0.0f;
+    int depth = 0;
+};
+
 // Resolves group morphs into a flat leaf-weight vector parallel to `set.morphs`. `directWeights`
 // is the sampled (pre-resolution) weight per morph from VMD or an editor; a group morph holds no
 // value itself, distributing `weight * ratio` to each member recursively. A non-group morph's
-// resolved weight is its direct weight plus whatever group distributions land on it.
+// resolved weight is its direct weight plus whatever group distributions land on it. `stack` is
+// reused across calls (it is empty on return) and sized up as needed.
 void ResolveMorphWeights(
     const MorphSet& set,
     const std::vector<float>& directWeights,
-    std::vector<float>& outResolved);
+    std::vector<float>& outResolved,
+    std::vector<MorphResolveEntry>& stack);
 
 // Applies weighted bone morphs to `pose` in the bone's local frame: the position delta is a
 // local-space translation and the rotation delta composes onto the local rotation (slerped from

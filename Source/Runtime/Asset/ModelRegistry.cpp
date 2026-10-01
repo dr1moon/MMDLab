@@ -48,15 +48,7 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
         model.skeleton.bones.push_back(std::move(bone));
     }
 
-    model.skeleton.children.resize(model.skeleton.bones.size());
-    for (std::size_t i = 0; i < model.skeleton.bones.size(); ++i)
-    {
-        const std::uint16_t parent = model.skeleton.bones[i].parentIndex;
-        if (parent != kInvalidBoneIndex && static_cast<std::size_t>(parent) < model.skeleton.bones.size())
-        {
-            model.skeleton.children[static_cast<std::size_t>(parent)].push_back(static_cast<std::uint16_t>(i));
-        }
-    }
+    BuildChildren(model.skeleton);
 
     // IK chains: every bone that stores an IK target drives one chain.
     for (std::size_t i = 0; i < meshData.bones.size(); ++i)
@@ -102,13 +94,8 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
     }
 
     // Morphs arrive already cooked: vertex offsets reference mesh-local vertices, and bone/group
-    // offsets reference global indices. Build the name index for VMD morph-track lookup.
+    // offsets reference global indices.
     model.morphs.morphs = meshData.morphs;
-    model.morphs.indexByName.reserve(model.morphs.morphs.size());
-    for (std::size_t i = 0; i < model.morphs.morphs.size(); ++i)
-    {
-        model.morphs.indexByName.emplace(model.morphs.morphs[i].name, i);
-    }
 
     model.physics = meshData.physics;
 

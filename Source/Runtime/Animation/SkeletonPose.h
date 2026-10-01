@@ -34,6 +34,19 @@ struct BonePose
     std::vector<DirectX::XMFLOAT4X4> local;
 };
 
+// Per-link scratch for the cyclic-coordinate-descent IK solver, one entry per chain link. Held in
+// the caller's per-model scratch so the per-frame IK solve does not allocate.
+struct IkLinkState
+{
+    std::uint16_t bone = kInvalidBoneIndex;
+    DirectX::XMFLOAT4 animRotation{};
+    DirectX::XMFLOAT4 rotation{};
+    DirectX::XMFLOAT4 savedRotation{};
+    DirectX::XMFLOAT3 position{};
+    DirectX::XMFLOAT3 previousEuler{};
+    float hingeAngle = 0.0f;
+};
+
 // Builds the bind pose from a skeleton. The bind rotation points each bone's local +Y along its
 // head -> tail direction (a zero-length tail falls back to +Y); the +X/+Z roll is a stable
 // default here and is refined to honor the PMX local-axis data once VMD playback needs the exact
@@ -44,6 +57,10 @@ struct BonePose
 // (afterPhysics, deformLayer, index), the order MMD evaluates deform layers in. Call once after
 // the bones and chains are built, before sampling IK state (which is parallel to ikChains).
 void BuildDeformOrder(Skeleton& skeleton);
+
+// Rebuilds `skeleton.childrenFlat` / `skeleton.childrenOffsets` from each bone's parent index, in
+// file order. Call once after the bones are built, before any child traversal.
+void BuildChildren(Skeleton& skeleton);
 
 // Evaluates every bone's model-space world transform: forward kinematics over `motionPose` (null
 // for the bind pose), then IK, axis constraints, and "付与" grants for the bones evaluated before
@@ -56,6 +73,7 @@ void EvaluateBoneWorld(
     const BonePose* motionPose,
     std::vector<DirectX::XMMATRIX>& outWorld,
     std::vector<DirectX::XMMATRIX>& outLocal,
+    std::vector<IkLinkState>& ikStates,
     const std::vector<bool>* ikEnabled = nullptr);
 
 // As above, for callers that never run the after-physics pass.
@@ -75,6 +93,8 @@ void EvaluateBoneWorldAfterPhysics(
     const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& local,
     std::vector<DirectX::XMMATRIX>& world,
+    std::vector<DirectX::XMMATRIX>& phaseLocal,
+    std::vector<IkLinkState>& ikStates,
     const std::vector<bool>* ikEnabled = nullptr);
 
 // Builds the skinning palette (inverseBind_i * world_i) from final world transforms.

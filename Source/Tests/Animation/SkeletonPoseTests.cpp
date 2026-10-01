@@ -29,8 +29,7 @@ MmdLab::Skeleton MakeChainSkeleton()
     child.parentIndex = 0;
     skeleton.bones.push_back(std::move(child));
 
-    skeleton.children.resize(2);
-    skeleton.children[0].push_back(1);
+    MmdLab::BuildChildren(skeleton);
     return skeleton;
 }
 
@@ -121,7 +120,7 @@ MMDLAB_TEST(Animation.SkeletonPose, RotatedBonePivotsAboutItsHead)
     bone.tail[0] = 0.0f; bone.tail[1] = 2.0f; bone.tail[2] = 0.0f;
     bone.parentIndex = MmdLab::kInvalidBoneIndex;
     skeleton.bones.push_back(std::move(bone));
-    skeleton.children.resize(1);
+    MmdLab::BuildChildren(skeleton);
 
     const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
 
@@ -164,7 +163,7 @@ MMDLAB_TEST(Animation.SkeletonPose, LocalCoordinateAxesDefineBindRotation)
     bone.localX[0] = 1.0f; bone.localX[1] = 0.0f; bone.localX[2] = 0.0f;
     bone.localZ[0] = 0.0f; bone.localZ[1] = 0.0f; bone.localZ[2] = 1.0f;
     skeleton.bones.push_back(std::move(bone));
-    skeleton.children.resize(1);
+    MmdLab::BuildChildren(skeleton);
 
     const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
 
@@ -193,8 +192,7 @@ MMDLAB_TEST(Animation.SkeletonPose, LookAtIkAimsToeAtTarget)
     AddBone("toe", 0, 0, 1, 0, 0, 2, 0);
     AddBone("toe_ik", 0, 1, 0, 0, 1, 1, MmdLab::kInvalidBoneIndex);
 
-    skeleton.children.resize(3);
-    skeleton.children[0].push_back(1);
+    MmdLab::BuildChildren(skeleton);
 
     MmdLab::IkChain chain;
     chain.ikBoneIndex = 2;
@@ -244,9 +242,7 @@ MMDLAB_TEST(Animation.SkeletonPose, DisabledIkKeepsAnkleAtBind)
     AddBone("ankle", 0, -1, 1, 0, -1, 2, 1);
     AddBone("foot_ik", 0, 0, 0, 0, 0, 1, MmdLab::kInvalidBoneIndex);
 
-    skeleton.children.resize(4);
-    skeleton.children[0].push_back(1);
-    skeleton.children[1].push_back(2);
+    MmdLab::BuildChildren(skeleton);
 
     MmdLab::IkChain chain;
     chain.ikBoneIndex = 3;
@@ -309,10 +305,7 @@ MmdLeg MakeMmdLeg(const bool limitKnee = true)
     AddBone("ankle", 0, 0, 0, 0, 0, -1, 2);
     AddBone("foot_ik", 0, 0, 0, 0, 0, 1, MmdLab::kInvalidBoneIndex);
 
-    skeleton.children.resize(5);
-    skeleton.children[0].push_back(1);
-    skeleton.children[1].push_back(2);
-    skeleton.children[2].push_back(3);
+    MmdLab::BuildChildren(skeleton);
 
     MmdLab::IkChain chain;
     chain.ikBoneIndex = 4;
@@ -493,7 +486,7 @@ GrantRig MakeGrantRig(const std::uint16_t firstInheritsFrom, const std::uint16_t
     rig.skeleton.bones[1].inheritParentIndex = secondInheritsFrom;
     rig.skeleton.bones[1].inheritInfluence = 1.0f;
     rig.skeleton.bones[1].afterPhysics = secondAfterPhysics;
-    rig.skeleton.children.resize(3);
+    MmdLab::BuildChildren(rig.skeleton);
     MmdLab::BuildDeformOrder(rig.skeleton);
     rig.bind = MmdLab::BuildBindPose(rig.skeleton);
     return rig;
@@ -546,14 +539,16 @@ MMDLAB_TEST(Animation.SkeletonPose, AfterPhysicsGrantFollowsTheSimulatedSource)
     const MmdLab::BonePose motion = PoseSource(rig, XMMatrixIdentity());
     std::vector<XMMATRIX> world;
     std::vector<XMMATRIX> local;
-    MmdLab::EvaluateBoneWorld(rig.skeleton, rig.bind, &motion, world, local);
+    std::vector<MmdLab::IkLinkState> ikStates;
+    MmdLab::EvaluateBoneWorld(rig.skeleton, rig.bind, &motion, world, local, ikStates);
 
     const XMMATRIX simulated = XMMatrixRotationX(XM_PIDIV2);
     world[2] = XMMatrixMultiply(world[2], simulated); // What PhysicsScene would write back.
     const XMVECTOR expected = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), simulated);
     MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[1]) - expected)) > 0.5f);
 
-    MmdLab::EvaluateBoneWorldAfterPhysics(rig.skeleton, rig.bind, local, world);
+    std::vector<XMMATRIX> phaseLocal;
+    MmdLab::EvaluateBoneWorldAfterPhysics(rig.skeleton, rig.bind, local, world, phaseLocal, ikStates);
     MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[1]) - expected)) < 1e-4f);
     // grantA inherits too but is evaluated before physics, so it keeps the animated source.
     MMDLAB_CHECK(XMVectorGetX(XMVector3Length(BoneUp(world[0]) - XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f))) < 1e-4f);

@@ -128,11 +128,11 @@ void ForEachBoneInPhase(const Skeleton& skeleton, const bool afterPhysics, Visit
 void PropagateWorld(const Skeleton& skeleton, const std::vector<DirectX::XMMATRIX>& local,
     std::vector<DirectX::XMMATRIX>& world, const std::uint16_t bone, const std::uint16_t skip)
 {
-    if (bone >= skeleton.children.size())
+    if (bone >= skeleton.bones.size())
     {
         return;
     }
-    for (const std::uint16_t child : skeleton.children[bone])
+    for (const std::uint16_t child : skeleton.Children(bone))
     {
         if (child == skip)
         {
@@ -269,20 +269,6 @@ int HingeAxisIndex(const IkLink& link)
     }
     return -1;
 }
-
-// Per-link solver state. `rotation` is the link's MMD local rotation (its VMD rotation with the
-// IK correction folded in); `position` is its head plus VMD offset in bind model space, which IK
-// never changes.
-struct IkLinkState
-{
-    std::uint16_t bone = kInvalidBoneIndex;
-    DirectX::XMFLOAT4 animRotation;
-    DirectX::XMFLOAT4 rotation;
-    DirectX::XMFLOAT4 savedRotation;
-    DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT3 previousEuler = { 0.0f, 0.0f, 0.0f };
-    float hingeAngle = 0.0f;
-};
 
 // Rebuilds a link's local and world transforms from its MMD local rotation and re-propagates its
 // descendants. local = R_bind * R_mmd * T(position) * inverseBind(parent), the composition the
@@ -477,10 +463,9 @@ void SolveIkChain(const IkChain& chain, const Skeleton& skeleton, const BindPose
 // are rewritten so the later passes build on the solved pose.
 void SolveIk(const Skeleton& skeleton, const BindPose& bindPose,
     std::vector<DirectX::XMMATRIX>& local, std::vector<DirectX::XMMATRIX>& world,
-    const std::vector<bool>* ikEnabled, const bool afterPhysics)
+    std::vector<IkLinkState>& states, const std::vector<bool>* ikEnabled, const bool afterPhysics)
 {
     ZoneScopedN("Animation.IK");
-    std::vector<IkLinkState> states;
     for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
     {
         if (ikEnabled != nullptr && i < ikEnabled->size() && !(*ikEnabled)[i])
@@ -683,6 +668,36 @@ BindPose BuildBindPose(const Skeleton& skeleton)
     return bind;
 }
 
+void BuildChildren(Skeleton& skeleton)
+{
+    const std::size_t count = skeleton.bones.size();
+    std::vector<std::uint32_t> childCount(count, 0);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const std::uint16_t parent = skeleton.bones[i].parentIndex;
+        if (parent != kInvalidBoneIndex && static_cast<std::size_t>(parent) < count)
+        {
+            ++childCount[parent];
+        }
+    }
+    skeleton.childrenOffsets.resize(count + 1);
+    skeleton.childrenOffsets[0] = 0;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        skeleton.childrenOffsets[i + 1] = skeleton.childrenOffsets[i] + childCount[i];
+    }
+    skeleton.childrenFlat.resize(skeleton.childrenOffsets.back());
+    std::vector<std::uint32_t> cursor = skeleton.childrenOffsets;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const std::uint16_t parent = skeleton.bones[i].parentIndex;
+        if (parent != kInvalidBoneIndex && static_cast<std::size_t>(parent) < count)
+        {
+            skeleton.childrenFlat[cursor[parent]++] = static_cast<std::uint16_t>(i);
+        }
+    }
+}
+
 void BuildDeformOrder(Skeleton& skeleton)
 {
     const std::size_t count = skeleton.bones.size();
@@ -713,7 +728,8 @@ void EvaluateBoneWorld(
     const std::vector<bool>* ikEnabled)
 {
     std::vector<DirectX::XMMATRIX> local;
-    EvaluateBoneWorld(skeleton, bindPose, motionPose, outWorld, local, ikEnabled);
+    std::vector<IkLinkState> ikStates;
+    EvaluateBoneWorld(skeleton, bindPose, motionPose, outWorld, local, ikStates, ikEnabled);
 }
 
 void EvaluateBoneWorld(
@@ -722,6 +738,7 @@ void EvaluateBoneWorld(
     const BonePose* motionPose,
     std::vector<DirectX::XMMATRIX>& outWorld,
     std::vector<DirectX::XMMATRIX>& outLocal,
+    std::vector<IkLinkState>& ikStates,
     const std::vector<bool>* ikEnabled)
 {
     ZoneScopedN("Animation.EvaluateBoneWorld");
@@ -763,7 +780,7 @@ void EvaluateBoneWorld(
     // Solve the IK chains on top of the animated pose (the bind pose needs no solving).
     if (hasMotion)
     {
-        SolveIk(skeleton, bindPose, local, scratchWorld, ikEnabled, false);
+        SolveIk(skeleton, bindPose, local, scratchWorld, ikStates, ikEnabled, false);
     }
 
     // Apply the per-bone constraints and "付与" grants. Axis constraints run first so the
@@ -778,6 +795,8 @@ void EvaluateBoneWorldAfterPhysics(
     const BindPose& bindPose,
     const std::vector<DirectX::XMMATRIX>& local,
     std::vector<DirectX::XMMATRIX>& world,
+    std::vector<DirectX::XMMATRIX>& phaseLocal,
+    std::vector<IkLinkState>& ikStates,
     const std::vector<bool>* ikEnabled)
 {
     using namespace DirectX;
@@ -791,15 +810,15 @@ void EvaluateBoneWorldAfterPhysics(
 
     // Re-run forward kinematics for the after-physics bones on top of their final parents (which
     // physics may have moved), parents first, then their chains, constraints, and grants. IK
-    // rewrites link locals, so it works on a copy.
-    std::vector<XMMATRIX> phaseLocal = local;
+    // rewrites link locals, so it works on a copy of `local` in the caller's scratch.
+    phaseLocal = local;
     ForEachBoneInPhase(skeleton, true, [&](const std::size_t i)
     {
         const std::uint16_t parent = skeleton.bones[i].parentIndex;
         world[i] = parent < count ? XMMatrixMultiply(local[i], world[parent]) : local[i];
         PropagateWorld(skeleton, local, world, static_cast<std::uint16_t>(i), kInvalidBoneIndex);
     });
-    SolveIk(skeleton, bindPose, phaseLocal, world, ikEnabled, true);
+    SolveIk(skeleton, bindPose, phaseLocal, world, ikStates, ikEnabled, true);
     ApplyFixedAxis(skeleton, bindPose, phaseLocal, world, true);
     ApplyInheritTranslation(skeleton, phaseLocal, world, true);
     ApplyInheritRotation(skeleton, bindPose, phaseLocal, world, true);

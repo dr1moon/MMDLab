@@ -28,7 +28,7 @@ MmdLab::Skeleton MakeHangingChain()
         bone.parentIndex = i == 0 ? MmdLab::kInvalidBoneIndex : static_cast<std::uint16_t>(i - 1);
         skeleton.bones.push_back(std::move(bone));
     }
-    skeleton.children = { { 1 }, { 2 }, {} };
+    MmdLab::BuildChildren(skeleton);
     return skeleton;
 }
 

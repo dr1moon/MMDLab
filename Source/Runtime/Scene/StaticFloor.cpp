@@ -55,7 +55,7 @@ Model BuildReflectiveFloorModel()
     root.tail[2] = 0.0f;
     root.parentIndex = kInvalidBoneIndex;
     model.skeleton.bones = { root };
-    model.skeleton.children.resize(1);
+    BuildChildren(model.skeleton);
 
     for (int i = 0; i < 4; ++i)
     {

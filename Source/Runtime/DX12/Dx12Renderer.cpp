@@ -126,7 +126,7 @@ void Dx12Renderer::EnsureModelsResident(
         {
             continue;
         }
-        if (residentModels_.find(instance.modelIndex) == residentModels_.end())
+        if (instance.modelIndex >= residentModels_.size() || residentModels_[instance.modelIndex] == nullptr)
         {
             BuildGpuModel(instance.modelIndex, models[instance.modelIndex]);
         }
@@ -164,9 +164,12 @@ void Dx12Renderer::Resize(const std::uint32_t width, const std::uint32_t height)
     reflectionSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     reflectionSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     reflectionSrv.Texture2D.MipLevels = 1;
-    for (auto& entry : residentModels_)
+    for (const auto& gpuModel : residentModels_)
     {
-        device_.Get()->CreateShaderResourceView(reflectionTarget_.Get(), &reflectionSrv, entry.second.reflectionSrvCpu);
+        if (gpuModel != nullptr)
+        {
+            device_.Get()->CreateShaderResourceView(reflectionTarget_.Get(), &reflectionSrv, gpuModel->reflectionSrvCpu);
+        }
     }
 
     LogInfo("Dx12", std::format("Resized render targets to {}x{}", width_, height_));
@@ -341,7 +344,11 @@ void Dx12Renderer::BuildGpuModel(const std::size_t modelIndex, const Model& mode
     gpuModel.reflectionSrvCpu = srvCpu;
     gpuModel.reflectionSrvGpu = srvGpu;
 
-    residentModels_.emplace(modelIndex, std::move(gpuModel));
+    if (residentModels_.size() <= modelIndex)
+    {
+        residentModels_.resize(modelIndex + 1);
+    }
+    residentModels_[modelIndex] = std::make_unique<GpuModel>(std::move(gpuModel));
 }
 
 void Dx12Renderer::CreatePipelineState()
@@ -1134,13 +1141,12 @@ void Dx12Renderer::UploadPerFrameBuffers(
         {
             continue;
         }
-        const auto resident = residentModels_.find(instance.modelIndex);
-        if (resident == residentModels_.end())
+        if (instance.modelIndex >= residentModels_.size() || residentModels_[instance.modelIndex] == nullptr)
         {
             continue;
         }
 
-        const GpuModel& gpuModel = resident->second;
+        const GpuModel& gpuModel = *residentModels_[instance.modelIndex];
         const std::uint32_t modelIndex = static_cast<std::uint32_t>(instance.modelIndex);
 
         // Upload this model's skinning palette: write the staging buffer, copy it into the
@@ -1229,14 +1235,13 @@ void Dx12Renderer::RenderSceneView(
         {
             continue; // The reflective surface is drawn in the main pass, not its own reflection.
         }
-        const auto resident = residentModels_.find(instance.modelIndex);
-        if (resident == residentModels_.end())
+        if (instance.modelIndex >= residentModels_.size() || residentModels_[instance.modelIndex] == nullptr)
         {
             continue; // Not resident; built on the level switch before this frame.
         }
 
         const Model& cpuModel = models[instance.modelIndex];
-        const GpuModel& gpuModel = resident->second;
+        const GpuModel& gpuModel = *residentModels_[instance.modelIndex];
 
         // Per-instance world transform, stored column-major for HLSL mul(world, pos).
         DirectX::XMFLOAT4X4 worldStorage;

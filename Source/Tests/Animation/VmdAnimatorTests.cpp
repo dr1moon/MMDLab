@@ -29,8 +29,7 @@ MmdLab::Skeleton MakeChainSkeleton()
     child.parentIndex = 0;
     skeleton.bones.push_back(std::move(child));
 
-    skeleton.children.resize(2);
-    skeleton.children[0].push_back(1);
+    MmdLab::BuildChildren(skeleton);
     return skeleton;
 }
 
@@ -72,7 +71,9 @@ MMDLAB_TEST(Animation.VmdAnimator, SamplesTrackAndFallsBackToBind)
     const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
 
     MmdLab::BonePose pose;
-    animator.SamplePose(skeleton, bind, pose);
+    std::vector<std::int32_t> trackIndices;
+    animator.ResolveBoneTrackIndices(skeleton, trackIndices);
+    animator.SamplePose(skeleton, bind, trackIndices, pose);
     MMDLAB_CHECK(pose.local.size() == skeleton.bones.size());
 
     // The root's local is R_vmd * bindLocal * T(0): the VMD rotation composed with the bind
@@ -101,7 +102,7 @@ MMDLAB_TEST(Animation.VmdAnimator, AppliesVmdRotationAfterBindRotation)
     bone.tail[0] = 1.0f; bone.tail[1] = 0.0f; bone.tail[2] = 0.0f;
     bone.parentIndex = MmdLab::kInvalidBoneIndex;
     skeleton.bones.push_back(std::move(bone));
-    skeleton.children.resize(1);
+    MmdLab::BuildChildren(skeleton);
 
     const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
 
@@ -121,7 +122,9 @@ MMDLAB_TEST(Animation.VmdAnimator, AppliesVmdRotationAfterBindRotation)
     animator.SetMotion(std::move(motion));
 
     MmdLab::BonePose pose;
-    animator.SamplePose(skeleton, bind, pose);
+    std::vector<std::int32_t> trackIndices;
+    animator.ResolveBoneTrackIndices(skeleton, trackIndices);
+    animator.SamplePose(skeleton, bind, trackIndices, pose);
 
     std::vector<DirectX::XMFLOAT4X4> palette;
     std::vector<DirectX::XMMATRIX> worldScratch;
@@ -146,7 +149,7 @@ MMDLAB_TEST(Animation.VmdAnimator, SamplesIkEnabledByBoneName)
     skeleton.bones.resize(2);
     skeleton.bones[0].name = "footIK";
     skeleton.bones[1].name = "toeIK";
-    skeleton.children.resize(2);
+    MmdLab::BuildChildren(skeleton);
 
     IkChain footChain;
     footChain.ikBoneIndex = 0;
@@ -176,7 +179,9 @@ MMDLAB_TEST(Animation.VmdAnimator, SamplesIkEnabledByBoneName)
     animator.SetMotion(std::move(motion));
 
     std::vector<bool> enabled;
-    animator.SampleIkEnabled(skeleton, enabled);
+    std::unordered_map<std::string, std::size_t> ikChainByName;
+    animator.ResolveIkChainByName(skeleton, ikChainByName);
+    animator.SampleIkEnabled(skeleton, ikChainByName, enabled);
 
     MMDLAB_CHECK(enabled.size() == 2);
     MMDLAB_CHECK(!enabled[0]); // "footIK" disabled by the keyframe.
@@ -230,11 +235,13 @@ MMDLAB_TEST(Animation.VmdAnimator, InterpolatesPositionWithBezierCurve)
     bone.name = "bone";
     bone.parentIndex = kInvalidBoneIndex;
     skeleton.bones.push_back(std::move(bone));
-    skeleton.children.resize(1);
+    MmdLab::BuildChildren(skeleton);
 
     const BindPose bind = BuildBindPose(skeleton);
     BonePose pose;
-    animator.SamplePose(skeleton, bind, pose);
+    std::vector<std::int32_t> trackIndices;
+    animator.ResolveBoneTrackIndices(skeleton, trackIndices);
+    animator.SamplePose(skeleton, bind, trackIndices, pose);
 
     // X uses the non-linear curve (factor 0.875), Y/Z stay linear (factor 0.5).
     MMDLAB_CHECK(std::fabs(pose.local[0].m[3][0] - 8.75f) < 1e-3f);

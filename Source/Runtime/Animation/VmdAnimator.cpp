@@ -183,6 +183,7 @@ void VmdAnimator::SeekFrames(const float frames)
 void VmdAnimator::SamplePose(
     const Skeleton& skeleton,
     const BindPose& bindPose,
+    const std::span<const std::int32_t> boneTrack,
     BonePose& outPose) const
 {
     ZoneScopedN("VmdAnimator::SamplePose");
@@ -209,16 +210,17 @@ void VmdAnimator::SamplePose(
     for (std::size_t i = 0; i < skeleton.bones.size(); ++i)
     {
         const Bone& bone = skeleton.bones[i];
-        const VmdBoneTrack* track = FindTrack(bone.name);
-        if (track == nullptr || track->keys.empty())
+        const std::int32_t trackIndex = boneTrack[i];
+        if (trackIndex < 0)
         {
             outPose.local[i] = bindPose.localBind[i];
             continue;
         }
+        const VmdBoneTrack& track = motion_.boneTracks[static_cast<std::size_t>(trackIndex)];
 
         XMVECTOR position;
         XMVECTOR rotation;
-        SampleTrack(*track, timeFrames_, position, rotation);
+        SampleTrack(track, timeFrames_, position, rotation);
 
         // The VMD rotation is a model-space rotation authored relative to the bone's bind
         // rotation, so compose it after the bind basis (R_bind * R_vmd), then translate to the
@@ -241,13 +243,31 @@ void VmdAnimator::SamplePose(
     }
 }
 
-const VmdBoneTrack* VmdAnimator::FindTrack(const std::string& boneName) const
+void VmdAnimator::ResolveBoneTrackIndices(const Skeleton& skeleton, std::vector<std::int32_t>& out) const
 {
-    const auto it = trackByBoneName_.find(boneName);
-    return it == trackByBoneName_.end() ? nullptr : &motion_.boneTracks[it->second];
+    out.resize(skeleton.bones.size());
+    for (std::size_t i = 0; i < skeleton.bones.size(); ++i)
+    {
+        const auto it = trackByBoneName_.find(skeleton.bones[i].name);
+        out[i] = it != trackByBoneName_.end() && !motion_.boneTracks[it->second].keys.empty()
+            ? static_cast<std::int32_t>(it->second)
+            : -1;
+    }
 }
 
-void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& outEnabled) const
+void VmdAnimator::ResolveMorphTrackIndices(const MorphSet& set, std::vector<std::int32_t>& out) const
+{
+    out.resize(set.morphs.size());
+    for (std::size_t i = 0; i < set.morphs.size(); ++i)
+    {
+        const auto it = morphTrackByName_.find(set.morphs[i].name);
+        out[i] = it != morphTrackByName_.end() ? static_cast<std::int32_t>(it->second) : -1;
+    }
+}
+
+void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton,
+    const std::unordered_map<std::string, std::size_t>& ikChainByName,
+    std::vector<bool>& outEnabled) const
 {
     outEnabled.assign(skeleton.ikChains.size(), true);
 
@@ -263,29 +283,42 @@ void VmdAnimator::SampleIkEnabled(const Skeleton& skeleton, std::vector<bool>& o
     const VmdShowIkKeyframe& active = *(upper - 1);
     for (const VmdIkBoneState& state : active.ikBones)
     {
-        for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
+        const auto it = ikChainByName.find(state.ikBoneName);
+        if (it != ikChainByName.end())
         {
-            const std::uint16_t ikBone = skeleton.ikChains[i].ikBoneIndex;
-            if (ikBone != kInvalidBoneIndex && static_cast<std::size_t>(ikBone) < skeleton.bones.size()
-                && skeleton.bones[ikBone].name == state.ikBoneName)
-            {
-                outEnabled[i] = state.enabled;
-                break;
-            }
+            outEnabled[it->second] = state.enabled;
         }
     }
 }
 
-void VmdAnimator::SampleMorphWeights(const MorphSet& set, std::vector<float>& outWeights) const
+void VmdAnimator::ResolveIkChainByName(const Skeleton& skeleton,
+    std::unordered_map<std::string, std::size_t>& out) const
+{
+    out.clear();
+    out.reserve(skeleton.ikChains.size());
+    for (std::size_t i = 0; i < skeleton.ikChains.size(); ++i)
+    {
+        const std::uint16_t ikBone = skeleton.ikChains[i].ikBoneIndex;
+        if (ikBone != kInvalidBoneIndex && static_cast<std::size_t>(ikBone) < skeleton.bones.size())
+        {
+            out.emplace(skeleton.bones[ikBone].name, i);
+        }
+    }
+}
+
+void VmdAnimator::SampleMorphWeights(
+    const MorphSet& set,
+    const std::span<const std::int32_t> morphTrack,
+    std::vector<float>& outWeights) const
 {
     ZoneScopedN("VmdAnimator::SampleMorphWeights");
     outWeights.assign(set.morphs.size(), 0.0f);
     for (std::size_t i = 0; i < set.morphs.size(); ++i)
     {
-        const auto it = morphTrackByName_.find(set.morphs[i].name);
-        if (it != morphTrackByName_.end())
+        const std::int32_t trackIndex = morphTrack[i];
+        if (trackIndex >= 0)
         {
-            outWeights[i] = SampleMorphWeight(motion_.morphTracks[it->second]);
+            outWeights[i] = SampleMorphWeight(motion_.morphTracks[static_cast<std::size_t>(trackIndex)]);
         }
     }
 }

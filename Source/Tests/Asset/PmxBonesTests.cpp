@@ -131,14 +131,11 @@ MMDLAB_TEST(Asset.Model, RetainsSkeletonAndSkinning)
         MMDLAB_CHECK(parent == MmdLab::kInvalidBoneIndex || static_cast<std::size_t>(parent) < model.skeleton.bones.size());
         if (parent != MmdLab::kInvalidBoneIndex)
         {
-            const std::vector<std::uint16_t>& siblings = model.skeleton.children[static_cast<std::size_t>(parent)];
+            const auto siblings = model.skeleton.Children(static_cast<std::size_t>(parent));
             MMDLAB_CHECK(std::find(siblings.begin(), siblings.end(), static_cast<std::uint16_t>(i)) != siblings.end());
         }
     }
-    for (const std::vector<std::uint16_t>& siblings : model.skeleton.children)
-    {
-        childCount += siblings.size();
-    }
+    childCount += model.skeleton.childrenFlat.size();
     std::size_t nonRootCount = 0;
     for (const MmdLab::Bone& bone : model.skeleton.bones)
     {

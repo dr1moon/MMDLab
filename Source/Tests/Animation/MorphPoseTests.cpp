@@ -88,7 +88,8 @@ MMDLAB_TEST(Animation.MorphPose, ResolvesGroupMorphs)
 
     const std::vector<float> direct = { 1.0f, 0.0f, 0.0f, 0.5f };
     std::vector<float> resolved;
-    MmdLab::ResolveMorphWeights(set, direct, resolved);
+    std::vector<MmdLab::MorphResolveEntry> stack;
+    MmdLab::ResolveMorphWeights(set, direct, resolved, stack);
 
     MMDLAB_CHECK(resolved.size() == 4);
     MMDLAB_CHECK(std::fabs(resolved[0]) < 1e-5f);            // Group holds no value itself.
@@ -198,7 +199,9 @@ MMDLAB_TEST(Animation.VmdAnimator, SamplesMorphWeights)
     animator.SeekFrames(15.0f); // Halfway between smile's frame 0 and frame 30.
 
     std::vector<float> weights;
-    animator.SampleMorphWeights(set, weights);
+    std::vector<std::int32_t> trackIndices;
+    animator.ResolveMorphTrackIndices(set, trackIndices);
+    animator.SampleMorphWeights(set, trackIndices, weights);
     MMDLAB_CHECK(weights.size() == 2);
     MMDLAB_CHECK(std::fabs(weights[0] - 0.5f) < 1e-5f); // Linear midpoint of 0 -> 1.
     MMDLAB_CHECK(std::fabs(weights[1] - 1.0f) < 1e-5f); // Held single keyframe.

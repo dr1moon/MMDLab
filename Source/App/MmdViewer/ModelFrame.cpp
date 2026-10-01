@@ -26,19 +26,32 @@ ModelFrameStats EvaluateModelFrame(
     if (animated)
     {
         const VmdAnimator& animator = *input.animator;
-        animator.SamplePose(model.skeleton, model.bindPose, scratch.motionPose);
-        animator.SampleIkEnabled(model.skeleton, scratch.ikEnabled);
+        // The name -> track indices are fixed for a motion, so resolve them once per motion
+        // generation and reuse them across frames (and across models sharing this scratch).
+        if (scratch.cachedMotionGeneration != animator.MotionGeneration())
+        {
+            scratch.cachedMotionGeneration = animator.MotionGeneration();
+            animator.ResolveBoneTrackIndices(model.skeleton, scratch.boneTrack);
+            animator.ResolveMorphTrackIndices(model.morphs, scratch.morphTrack);
+        }
+        animator.SamplePose(model.skeleton, model.bindPose, scratch.boneTrack, scratch.motionPose);
+        if (!scratch.ikChainByNameResolved)
+        {
+            scratch.ikChainByNameResolved = true;
+            animator.ResolveIkChainByName(model.skeleton, scratch.ikChainByName);
+        }
+        animator.SampleIkEnabled(model.skeleton, scratch.ikChainByName, scratch.ikEnabled);
         // Sample and resolve morphs; bone morphs fold into the pose before skeleton evaluation
         // so their offsets reach the skinning palette.
-        animator.SampleMorphWeights(model.morphs, scratch.morphWeights);
-        ResolveMorphWeights(model.morphs, scratch.morphWeights, scratch.resolvedWeights);
+        animator.SampleMorphWeights(model.morphs, scratch.morphTrack, scratch.morphWeights);
+        ResolveMorphWeights(model.morphs, scratch.morphWeights, scratch.resolvedWeights, scratch.morphStack);
         ApplyBoneMorphs(model.morphs, scratch.resolvedWeights, scratch.motionPose);
         EvaluateBoneWorld(model.skeleton, model.bindPose, &scratch.motionPose, scratch.world, scratch.local,
-            &scratch.ikEnabled);
+            scratch.ikStates, &scratch.ikEnabled);
     }
     else
     {
-        EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, scratch.world, scratch.local);
+        EvaluateBoneWorld(model.skeleton, model.bindPose, nullptr, scratch.world, scratch.local, scratch.ikStates);
         scratch.ikEnabled.clear();
         scratch.resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
     }
@@ -63,7 +76,7 @@ ModelFrameStats EvaluateModelFrame(
 
     // PMX PhysicsAfterDeform bones (and their IK and grants) follow the simulation.
     EvaluateBoneWorldAfterPhysics(model.skeleton, model.bindPose, scratch.local, scratch.world,
-        scratch.ikEnabled.empty() ? nullptr : &scratch.ikEnabled);
+        scratch.phaseLocal, scratch.ikStates, scratch.ikEnabled.empty() ? nullptr : &scratch.ikEnabled);
     BuildSkinningPalette(model.bindPose, scratch.world, output.palette);
 
     // Accumulate active vertex morphs into the dense per-vertex position delta (all zeros with no
