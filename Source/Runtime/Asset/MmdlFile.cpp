@@ -79,7 +79,7 @@ private:
 };
 } // namespace
 
-MmdlMeshData ReadMmdl(const std::filesystem::path& path)
+std::vector<std::uint8_t> ReadMmdlBytes(const std::filesystem::path& path)
 {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file)
@@ -97,7 +97,11 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
     {
         file.read(reinterpret_cast<char*>(data.data()), fileSize);
     }
+    return data;
+}
 
+MmdlMeshData ParseMmdl(const std::span<const std::uint8_t> data)
+{
     if (data.size() < sizeof(MmdlHeader))
     {
         throw std::runtime_error(".mmdl file is too small.");
@@ -516,5 +520,10 @@ MmdlMeshData ReadMmdl(const std::filesystem::path& path)
     }
 
     return mesh;
+}
+
+MmdlMeshData ReadMmdl(const std::filesystem::path& path)
+{
+    return ParseMmdl(ReadMmdlBytes(path));
 }
 } // namespace MmdLab

@@ -1,10 +1,9 @@
 #include "Runtime/Asset/ImageLoader.h"
 
 // stb_image: single-header image decoder (MIT / public domain). Kept as the fallback for formats
-// WIC cannot decode (or when WIC is unavailable). STBI_WINDOWS_UTF8 makes stbi_load open files via
-// UTF-8 paths (_wfopen), so non-ASCII texture names resolve.
+// WIC cannot decode (or when WIC is unavailable). Only stbi_load_from_memory is used: the file is
+// read by ReadImageBytes, so the path-based loaders (and their UTF-8 path handling) are not needed.
 #define STB_IMAGE_IMPLEMENTATION
-#define STBI_WINDOWS_UTF8
 #include "ThirdParty/stb/stb_image.h"
 
 #include "tracy/Tracy.hpp"
@@ -27,23 +26,8 @@ namespace MmdLab
 {
 namespace
 {
-// Converts a UTF-16 wide path to UTF-8, which stbi_load expects under STBI_WINDOWS_UTF8.
-std::string WideToUtf8(const std::wstring& wide)
-{
-    if (wide.empty())
-    {
-        return {};
-    }
-    const int length = WideCharToMultiByte(
-        CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
-    std::string utf8(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), utf8.data(), length, nullptr, nullptr);
-    return utf8;
-}
-
-// WIC needs COM on the calling thread. The asset I/O workers are the only callers of DecodeImage,
-// so initialize the multi-threaded apartment lazily, once per thread.
+// WIC needs COM on the calling thread. The asset I/O workers and the cooker call
+// DecodeImageFromBytes, so initialize the multi-threaded apartment lazily, once per thread.
 void EnsureComInitialized()
 {
     thread_local bool initialized = false;
@@ -56,8 +40,8 @@ void EnsureComInitialized()
 
 // Decodes any image WIC understands (PNG/JPEG/BMP/...) into tightly packed RGBA8. WIC's codecs
 // are far faster than stb_image's bundled zlib for the large PNGs MMD models ship. Returns false
-// (leaving `image` untouched) when WIC cannot decode the file.
-bool TryDecodeWic(const std::filesystem::path& path, Image& image)
+// (leaving `image` untouched) when WIC cannot decode the bytes.
+bool TryDecodeWic(const std::span<const std::uint8_t> bytes, Image& image)
 {
     using Microsoft::WRL::ComPtr;
 
@@ -70,9 +54,21 @@ bool TryDecodeWic(const std::filesystem::path& path, Image& image)
         return false;
     }
 
+    // Decode from the in-memory bytes so the caller, not WIC, owns the file read.
+    ComPtr<IWICStream> stream;
+    if (FAILED(factory->CreateStream(&stream)))
+    {
+        return false;
+    }
+    if (FAILED(stream->InitializeFromMemory(const_cast<WICInProcPointer>(bytes.data()),
+                                            static_cast<DWORD>(bytes.size()))))
+    {
+        return false;
+    }
+
     ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                  WICDecodeMetadataCacheOnDemand, &decoder)))
+    if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr,
+                                                WICDecodeMetadataCacheOnDemand, &decoder)))
     {
         return false;
     }
@@ -117,27 +113,47 @@ bool TryDecodeWic(const std::filesystem::path& path, Image& image)
 }
 } // namespace
 
-Image DecodeImage(const std::filesystem::path& path)
+std::vector<std::uint8_t> ReadImageBytes(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+    {
+        throw std::runtime_error("Failed to open the texture image file.");
+    }
+    const std::streamsize fileSize = file.tellg();
+    if (fileSize < 0)
+    {
+        throw std::runtime_error("Failed to size the texture image file.");
+    }
+    file.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(fileSize));
+    if (fileSize > 0)
+    {
+        file.read(reinterpret_cast<char*>(bytes.data()), fileSize);
+    }
+    return bytes;
+}
+
+Image DecodeImageFromBytes(const std::span<const std::uint8_t> bytes)
 {
     ZoneScopedN("DecodeImage");
     Image image;
-    if (TryDecodeWic(path, image))
+    if (TryDecodeWic(bytes, image))
     {
         return image;
     }
 
     // Fall back to stb_image for formats WIC cannot decode.
-    const std::string utf8Path = WideToUtf8(path.wstring());
-
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* pixels = stbi_load(utf8Path.c_str(), &width, &height, &channels, 4); // 4 = force RGBA8.
+    stbi_uc* pixels = stbi_load_from_memory(
+        bytes.data(), static_cast<int>(bytes.size()), &width, &height, &channels, 4); // 4 = force RGBA8.
     if (pixels == nullptr)
     {
         const char* reason = stbi_failure_reason();
         throw std::runtime_error(
-            std::string("Failed to load texture image: ") + (reason != nullptr ? reason : "unknown error"));
+            std::string("Failed to decode texture image: ") + (reason != nullptr ? reason : "unknown error"));
     }
 
     image.width = static_cast<std::uint32_t>(width);
@@ -145,6 +161,11 @@ Image DecodeImage(const std::filesystem::path& path)
     image.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
     stbi_image_free(pixels);
     return image;
+}
+
+Image DecodeImage(const std::filesystem::path& path)
+{
+    return DecodeImageFromBytes(ReadImageBytes(path));
 }
 
 Image MissingTextureImage()
@@ -156,20 +177,36 @@ Image MissingTextureImage()
     return image;
 }
 
-Image ReadCookedTexture(const std::filesystem::path& path)
+std::vector<std::uint8_t> ReadCookedTextureBytes(const std::filesystem::path& path)
 {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file)
     {
         throw std::runtime_error("Failed to open the cooked texture file.");
     }
+    const std::streamsize fileSize = file.tellg();
+    if (fileSize < 0)
+    {
+        throw std::runtime_error("Failed to size the cooked texture file.");
+    }
+    file.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(fileSize));
+    if (fileSize > 0)
+    {
+        file.read(reinterpret_cast<char*>(bytes.data()), fileSize);
+    }
+    return bytes;
+}
+
+Image DecodeCookedTexture(const std::span<const std::uint8_t> bytes)
+{
+    if (bytes.size() < sizeof(CookedTextureHeader))
+    {
+        throw std::runtime_error("Cooked texture is too small.");
+    }
 
     CookedTextureHeader header{};
-    file.read(reinterpret_cast<char*>(&header), sizeof(header));
-    if (!file)
-    {
-        throw std::runtime_error("Cooked texture file is too small.");
-    }
+    std::memcpy(&header, bytes.data(), sizeof(header));
     if (header.magic != CookedTextureMagic)
     {
         throw std::runtime_error("Not a cooked texture (bad magic).");
@@ -182,18 +219,17 @@ Image ReadCookedTexture(const std::filesystem::path& path)
     {
         throw std::runtime_error("Unsupported cooked texture format.");
     }
+    if (bytes.size() < sizeof(header) + header.dataBytes)
+    {
+        throw std::runtime_error("Cooked texture data is truncated.");
+    }
 
-    // Read the pixel/block data straight into the image (no intermediate copy).
+    // Copy the pixel/block data straight into the image (one memcpy, no decode).
     Image image;
     image.width = header.width;
     image.height = header.height;
     image.format = static_cast<TextureFormat>(header.format);
-    image.pixels.resize(header.dataBytes);
-    file.read(reinterpret_cast<char*>(image.pixels.data()), static_cast<std::streamsize>(header.dataBytes));
-    if (!file)
-    {
-        throw std::runtime_error("Cooked texture data is truncated.");
-    }
+    image.pixels.assign(bytes.data() + sizeof(header), bytes.data() + sizeof(header) + header.dataBytes);
     return image;
 }
 
@@ -205,7 +241,7 @@ Image LoadTexture(const std::filesystem::path& path)
     {
         try
         {
-            return ReadCookedTexture(cookedPath);
+            return DecodeCookedTexture(ReadCookedTextureBytes(cookedPath));
         }
         catch (const std::exception&)
         {
@@ -215,6 +251,6 @@ Image LoadTexture(const std::filesystem::path& path)
 
     // No current .mmtex: decode into RGBA8. Block compression is the asset pipeline's job, not the
     // runtime's.
-    return DecodeImage(path);
+    return DecodeImageFromBytes(ReadImageBytes(path));
 }
 } // namespace MmdLab

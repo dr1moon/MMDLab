@@ -180,7 +180,10 @@ Model ModelRegistry::ParseModelFile(const std::filesystem::path& path)
 
 Model ModelRegistry::ParseModelFileFromMmdl(const std::filesystem::path& path)
 {
-    const MmdlMeshData meshData = ReadMmdl(path);
+    // Read the bytes, then parse them: the read is I/O, the parse is CPU decode. They are split so
+    // the decode can later move to a compute thread without touching the file I/O.
+    const std::vector<std::uint8_t> bytes = ReadMmdlBytes(path);
+    const MmdlMeshData meshData = ParseMmdl(bytes);
     return BuildModelFromMmdlData(WideToUtf8(path.stem().wstring()), meshData);
 }
 

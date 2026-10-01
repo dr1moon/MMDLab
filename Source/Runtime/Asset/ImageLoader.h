@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <vector>
 
 namespace MmdLab
@@ -41,22 +42,33 @@ struct CookedTextureHeader
 };
 static_assert(sizeof(CookedTextureHeader) == 24);
 
-// Decodes a texture file (PNG, BMP, TGA, JPEG, ...) into tightly packed RGBA8. Uses the Windows
-// Imaging Component (WIC) first and falls back to stb_image: WIC's system codecs decode the
-// large PNGs MMD models ship far faster than stb_image's bundled, unoptimized zlib, so the
-// fallback only covers formats WIC cannot decode. WIC is a COM API, so DecodeImage initializes
-// the multi-threaded apartment on the calling thread lazily. Throws std::runtime_error when
-// neither path can decode the file. Named DecodeImage (not LoadImage) to avoid colliding with
-// the <windows.h> LoadImage macro.
+// Reads a source image file's raw encoded bytes (PNG, BMP, TGA, JPEG, ...). Throws
+// std::runtime_error when the file cannot be opened or sized.
+[[nodiscard]] std::vector<std::uint8_t> ReadImageBytes(const std::filesystem::path& path);
+
+// Decodes encoded image bytes (PNG, BMP, TGA, JPEG, ...) into tightly packed RGBA8. Uses the
+// Windows Imaging Component (WIC) first and falls back to stb_image: WIC's system codecs decode
+// the large PNGs MMD models ship far faster than stb_image's bundled, unoptimized zlib, so the
+// fallback only covers formats WIC cannot decode. WIC is a COM API, so the calling thread
+// initializes the multi-threaded apartment lazily. Throws std::runtime_error when neither path can
+// decode the bytes. The buffer is read only during the call.
+[[nodiscard]] Image DecodeImageFromBytes(std::span<const std::uint8_t> bytes);
+
+// Decodes a texture file into tightly packed RGBA8 (ReadImageBytes + DecodeImageFromBytes).
+// Named DecodeImage (not LoadImage) to avoid colliding with the <windows.h> LoadImage macro.
 [[nodiscard]] Image DecodeImage(const std::filesystem::path& path);
 
 // A 1x1 magenta image (Unity's missing-texture color), substituted when a texture cannot be
 // decoded, so a broken asset is obvious instead of silently white.
 [[nodiscard]] Image MissingTextureImage();
 
-// Reads a cooked texture back (one fread + a memcpy). Throws std::runtime_error on a bad magic,
-// version, or pixel size.
-[[nodiscard]] Image ReadCookedTexture(const std::filesystem::path& path);
+// Reads a cooked texture file's raw bytes (.mmtex: header + packed pixels or blocks). Throws
+// std::runtime_error when the file cannot be opened or sized.
+[[nodiscard]] std::vector<std::uint8_t> ReadCookedTextureBytes(const std::filesystem::path& path);
+
+// Decodes cooked-texture bytes (one memcpy after validating the header). Throws std::runtime_error
+// on a bad magic, version, format, or truncated data. The buffer is read only during the call.
+[[nodiscard]] Image DecodeCookedTexture(std::span<const std::uint8_t> bytes);
 
 // Loads a texture, preferring a current cooked .mmtex next to the source image; falls back to
 // decoding the source into RGBA8 (no block compression at runtime — cooking is the asset
