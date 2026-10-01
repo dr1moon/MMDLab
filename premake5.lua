@@ -83,6 +83,16 @@ project "Bullet"
     ConfigureCppProject()
     kind "StaticLib"
     warnings "Off"
+    -- Bullet is an external, inline-heavy library. Compile it optimized even in Debug: at the
+    -- default /Od its stepSimulation is ~10x slower, and the fixed-timestep catch-up
+    -- (kMaxSubSteps) then runs ~10x more sub-steps per slow frame, compounding to ~150x and
+    -- dropping the Debug viewer below 2 fps. /O2 keeps the physics hot path at Release speed
+    -- while the application's own translation units stay debuggable. Runtime checks are off
+    -- because /RTC1 (the debug default) is incompatible with /O2.
+    filter "configurations:Debug"
+        optimize "Speed"
+        runtimechecks "Off"
+    filter {}
     includedirs { "Source/ThirdParty/bullet" }
     files {
         "Source/ThirdParty/bullet/LinearMath/**.cpp",
