@@ -69,6 +69,28 @@ btVector3 ToBullet(const float (&values)[3])
     return btVector3(values[0], values[1], values[2]);
 }
 
+// Applies a joint's limits and per-axis springs to a six-degree-of-freedom constraint.
+void ConfigureSpring(btGeneric6DofSpringConstraint& constraint, const ConstraintSetup& setup)
+{
+    constraint.setLinearLowerLimit(ToBullet(setup.linearLowerLimit));
+    constraint.setLinearUpperLimit(ToBullet(setup.linearUpperLimit));
+    constraint.setAngularLowerLimit(ToBullet(setup.angularLowerLimit));
+    constraint.setAngularUpperLimit(ToBullet(setup.angularUpperLimit));
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (setup.linearStiffness[axis] != 0.0f)
+        {
+            constraint.enableSpring(axis, true);
+            constraint.setStiffness(axis, setup.linearStiffness[axis]);
+        }
+        if (setup.angularStiffness[axis] != 0.0f)
+        {
+            constraint.enableSpring(axis + 3, true);
+            constraint.setStiffness(axis + 3, setup.angularStiffness[axis]);
+        }
+    }
+}
+
 // The ground plane's collision group: above the sixteen PMX groups, so no PMX mask names it.
 constexpr int kGroundGroup = 1 << 16;
 
@@ -119,6 +141,19 @@ struct PhysicsScene::Impl
     std::unique_ptr<btDiscreteDynamicsWorld> world;
     std::vector<Body> bodies;
     std::vector<std::unique_ptr<btGeneric6DofSpringConstraint>> constraints;
+
+    // A kinematic anchor that a self-joint (bodyA == bodyB) constrains its body to. MMD uses a
+    // self-joint as a "補助" (auxiliary) spring that pulls a body back toward its own bone; the
+    // anchor sits exactly on that bone and tracks it each frame, so the spring follows the bone.
+    struct Anchor
+    {
+        std::uint16_t bone = kInvalidBoneIndex;
+        std::unique_ptr<btCollisionShape> shape;
+        std::unique_ptr<btDefaultMotionState> motionState;
+        std::unique_ptr<btRigidBody> rigidBody;
+    };
+    std::vector<Anchor> anchors;
+
     PmxOverlapFilter overlapFilter;
     std::unique_ptr<btStaticPlaneShape> groundShape;
     std::unique_ptr<btRigidBody> ground;
@@ -146,6 +181,10 @@ struct PhysicsScene::Impl
         for (const Body& body : bodies)
         {
             world->removeRigidBody(body.rigidBody.get());
+        }
+        for (const Anchor& anchor : anchors)
+        {
+            world->removeRigidBody(anchor.rigidBody.get());
         }
         if (groundEnabled)
         {
@@ -238,32 +277,53 @@ PhysicsScene::PhysicsScene(const PhysicsAsset& asset, const Skeleton& skeleton, 
         {
             continue;
         }
+
+        // The joint frame in model space at bind pose, shared by both paths below.
+        const btTransform joint = ToBullet(PmxTransform(setup.position, setup.rotation));
+
+        // A self-joint (bodyA == bodyB) is MMD's "connect a body to its own bone" idiom: a
+        // "補助" (auxiliary) spring that pulls the body back toward its animated bone. Bullet
+        // cannot connect a body to itself, so constrain it to a kinematic anchor that tracks the
+        // body's bone instead.
+        if (setup.bodyA == setup.bodyB)
+        {
+            const Impl::Body& body = impl.bodies[setup.bodyA];
+            if (body.bone == kInvalidBoneIndex)
+            {
+                continue; // No bone to anchor to; the joint is degenerate.
+            }
+
+            Impl::Anchor anchor;
+            anchor.bone = body.bone;
+            anchor.shape = std::make_unique<btSphereShape>(0.0f); // Never collides.
+            const XMMATRIX boneBind = XMMatrixInverse(nullptr, XMLoadFloat4x4(&bindPose.inverseBind[anchor.bone]));
+            anchor.motionState = std::make_unique<btDefaultMotionState>(ToBullet(boneBind));
+            btRigidBody::btRigidBodyConstructionInfo info(0.0f, anchor.motionState.get(), anchor.shape.get());
+            anchor.rigidBody = std::make_unique<btRigidBody>(info);
+            anchor.rigidBody->setCollisionFlags(
+                anchor.rigidBody->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+            anchor.rigidBody->setActivationState(DISABLE_DEACTIVATION);
+            impl.world->addRigidBody(anchor.rigidBody.get(), 0, 0); // Group/mask 0: collides with nothing.
+
+            btRigidBody& bodyRigid = *impl.bodies[setup.bodyA].rigidBody;
+            const btTransform frameBody = bodyRigid.getWorldTransform().inverse() * joint;
+            const btTransform frameAnchor = anchor.rigidBody->getWorldTransform().inverse() * joint;
+            auto constraint = std::make_unique<btGeneric6DofSpringConstraint>(
+                bodyRigid, *anchor.rigidBody, frameBody, frameAnchor, true);
+            ConfigureSpring(*constraint, setup);
+            impl.world->addConstraint(constraint.get());
+            impl.constraints.push_back(std::move(constraint));
+            impl.anchors.push_back(std::move(anchor));
+            continue;
+        }
+
         btRigidBody& bodyA = *impl.bodies[setup.bodyA].rigidBody;
         btRigidBody& bodyB = *impl.bodies[setup.bodyB].rigidBody;
-
-        // The joint frame in each body's local space, taken at bind pose (bodies start there).
-        const btTransform joint = ToBullet(PmxTransform(setup.position, setup.rotation));
         const btTransform frameA = bodyA.getWorldTransform().inverse() * joint;
         const btTransform frameB = bodyB.getWorldTransform().inverse() * joint;
 
         auto constraint = std::make_unique<btGeneric6DofSpringConstraint>(bodyA, bodyB, frameA, frameB, true);
-        constraint->setLinearLowerLimit(ToBullet(setup.linearLowerLimit));
-        constraint->setLinearUpperLimit(ToBullet(setup.linearUpperLimit));
-        constraint->setAngularLowerLimit(ToBullet(setup.angularLowerLimit));
-        constraint->setAngularUpperLimit(ToBullet(setup.angularUpperLimit));
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            if (setup.linearStiffness[axis] != 0.0f)
-            {
-                constraint->enableSpring(axis, true);
-                constraint->setStiffness(axis, setup.linearStiffness[axis]);
-            }
-            if (setup.angularStiffness[axis] != 0.0f)
-            {
-                constraint->enableSpring(axis + 3, true);
-                constraint->setStiffness(axis + 3, setup.angularStiffness[axis]);
-            }
-        }
+        ConfigureSpring(*constraint, setup);
         impl.world->addConstraint(constraint.get());
         impl.constraints.push_back(std::move(constraint));
     }
@@ -386,6 +446,12 @@ void PhysicsScene::Simulate(const float deltaSeconds, std::vector<DirectX::XMMAT
             body.motionState->setWorldTransform(ToBullet(
                 XMMatrixMultiply(XMLoadFloat4x4(&body.offset), impl.BoneWorld(world, body.bone))));
         }
+    }
+    // Drive the self-joint anchors the same way; each sits exactly on its bone, so the auxiliary
+    // spring tracks the animated bone as the model moves.
+    for (Impl::Anchor& anchor : impl.anchors)
+    {
+        anchor.motionState->setWorldTransform(ToBullet(impl.BoneWorld(world, anchor.bone)));
     }
 
     if (deltaSeconds > 0.0f)

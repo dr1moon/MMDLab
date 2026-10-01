@@ -1,10 +1,9 @@
-# Physics self-joint assert on Yae Miko (八重神子)
+# Physics self-joint: a body constrained to its own bone
 
 ## Summary
 
-The viewer aborts during startup when the selected level contains the Yae Miko
-(八重神子) model. Bullet's `btDiscreteDynamicsWorld::addConstraint` hits this
-assert:
+The viewer aborted during startup when the selected model set contained a
+self-joint. Bullet's `btDiscreteDynamicsWorld::addConstraint` hits this assert:
 
 ```cpp
 void btDiscreteDynamicsWorld::addConstraint(btTypedConstraint* constraint, bool disableCollisionsBetweenLinkedBodies)
@@ -20,57 +19,48 @@ log line.
 
 ## Root cause
 
-A joint whose `bodyA == bodyB` (a self-joint) is never filtered out. Each stage
-of the pipeline checks that the body indices are in range, but not that they are
-distinct:
+A self-joint (`bodyA == bodyB`) is not invalid input; it is MMD's idiom for
+"connect a rigid body to its own bone". Such joints are named with a "補"
+(auxiliary) suffix and act as a spring that pulls a body back toward the bone it
+is attached to. The affected bodies are "錘" (weight/sinker) rigid bodies in
+`Physics` mode, each also chained to a parent body by a normal joint; the
+self-joint adds the spring-back to the bone so hair, ribbons, and cloth sway
+instead of sagging.
 
-- `Source/Runtime/Asset/PmxFile.cpp` (PMX -> `.mmdl` joint parse): guards
-  `bodyA < 0 || bodyB < 0 || bodyA >= bodyCount || bodyB >= bodyCount` and
-  otherwise stores the joint.
-- `Source/Runtime/Asset/MmdlFile.cpp` (`.mmdl` -> `PhysicsAsset`): guards
-  `constraint.bodyA >= bodyCount || constraint.bodyB >= bodyCount`.
-- `Source/Runtime/Physics/PhysicsScene.cpp` (the Bullet constraint pass):
-  guards `setup.bodyA >= impl.bodies.size() || setup.bodyB >= impl.bodies.size()`
-  (line 237), then does:
+The affected models (verified in both the source `.pmx` and the cooked `.mmdl`):
 
-  ```cpp
-  btRigidBody& bodyA = *impl.bodies[setup.bodyA].rigidBody;  // line 241
-  btRigidBody& bodyB = *impl.bodies[setup.bodyB].rigidBody;  // line 242
-  ...
-  impl.world->addConstraint(constraint.get());               // line 267 -> assert
-  ```
+- `尼可/尼可`: 1 self-joint (右DressLetA01補).
+- `沃雅妮莎/沃雅妮莎`: 9 self-joints.
+- `沃雅妮莎/沃雅妮莎_人鱼`: 10 self-joints.
 
-  When `setup.bodyA == setup.bodyB`, `bodyA` and `bodyB` are the same object and
-  `addConstraint` asserts.
+Yae Miko (八重神子) is **not** affected (347 rigid bodies, 458 joints, 0
+self-joints). An earlier version of this note mis-attributed the crash to it;
+the viewer loads every model under `Models/` in parallel, so the assert was
+fired by one of the models above while Yae Miko's `[Physics]` line happened to
+be the last one logged.
 
-The trigger model is data-dependent: Yae Miko declares 347 rigid bodies and 458
-joints (see the `[Physics]` startup line), and one of those joints has
-`bodyA == bodyB`. The previously exercised physics model, Hu Tao (胡桃), has no
-such joint, so the case was never hit.
+The runtime passed `bodyA == bodyB` straight into
+`btGeneric6DofSpringConstraint` (`Source/Runtime/Physics/PhysicsScene.cpp`),
+which Bullet rejects because a constraint must join two distinct bodies.
 
-## Suggested fix
+## Fix
 
-Decide whether a self-joint is invalid input to skip, or a data-cooking bug to
-fix at the source. The safest place to guard is the Bullet pass, since it is the
-last stage and protects the runtime regardless of where the bad joint came from:
+`PhysicsScene` now implements the body-to-bone semantics. When it meets a
+self-joint, it builds a kinematic anchor body that sits exactly on the joint's
+bone, adds it to the world with collision group/mask 0 (so it collides with
+nothing), and constrains the body to that anchor with the joint's 6-DOF spring.
+The anchor is driven from the animated pose in `Simulate`, alongside the
+`FollowBone` bodies, so the auxiliary spring tracks the bone as the model moves
+(see `btRigidBody::saveKinematicState`, which pulls a kinematic body's transform
+back from its motion state each step).
 
-```cpp
-// PhysicsScene.cpp, in the constraint loop (after the bounds check):
-if (setup.bodyA == setup.bodyB)
-{
-    continue;
-}
-```
-
-Optionally also skip self-joints when parsing the PMX (`PmxFile.cpp`) and when
-reading the `.mmdl` (`MmdlFile.cpp`), so the cooked asset is already clean.
-Note the `.mmdl` version bump this would imply if the reader/writer behaviour is
-changed.
+If a self-joint body has no bone (`kInvalidBoneIndex`), the joint is degenerate
+and is dropped; no model in the project hits this case.
 
 ## Repro
 
 1. Build `Debug`.
-2. Run the viewer with `Project` as the working directory and select a level
-   containing Yae Miko (八重神子), e.g. `MmdViewer.exe --frames 600`.
-3. The process aborts (exit code 3) shortly after the physics line
-   `[Physics] '八重神子': 347 rigid bodies, 458 joints` appears.
+2. Run `MmdViewer.exe` with `Project` as the working directory and a frame
+   limit, e.g. `MmdViewer.exe --frames 120`.
+3. The viewer loads and simulates all models, including the three above, and
+   exits cleanly instead of aborting.

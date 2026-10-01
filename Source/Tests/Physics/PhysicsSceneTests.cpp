@@ -132,6 +132,28 @@ MMDLAB_TEST(Physics.Scene, JointHoldsASimulatedBodyUnderAKinematicOne)
     MMDLAB_CHECK(std::fabs(WorldY(world[1]) - 8.0f) < 0.05f);
 }
 
+MMDLAB_TEST(Physics.Scene, SelfJointAnchorsABodyToItsBone)
+{
+    const MmdLab::Skeleton skeleton = MakeHangingChain();
+    const MmdLab::BindPose bind = MmdLab::BuildBindPose(skeleton);
+    MmdLab::PhysicsAsset asset;
+    asset.bodies = { MakeSphere(1, MmdLab::BodyMode::Physics, 7.0f) };
+
+    // A self-joint (bodyA == bodyB) is MMD's "connect a body to its own bone" idiom: an auxiliary
+    // spring pinned to the body's bone. Here a locked joint holds the body one unit below its bone
+    // (hang at y = 8) instead of letting it fall under gravity.
+    MmdLab::ConstraintSetup joint;
+    joint.bodyA = 0;
+    joint.bodyB = 0;
+    joint.position[1] = 7.0f;
+    asset.constraints = { joint };
+
+    MmdLab::PhysicsScene scene(asset, skeleton, bind);
+    scene.SetGroundEnabled(false);
+    const std::vector<XMMATRIX> world = Run(scene, skeleton, bind, 0.5f);
+    MMDLAB_CHECK(std::fabs(WorldY(scene.BodyWorld(0)) - 7.0f) < 0.05f);
+}
+
 MMDLAB_TEST(Physics.Scene, CollisionMaskDecidesWhetherBodiesCollide)
 {
     const MmdLab::Skeleton skeleton = MakeHangingChain();
