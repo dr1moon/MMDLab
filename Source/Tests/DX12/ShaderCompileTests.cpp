@@ -9,6 +9,9 @@ MMDLAB_TEST(DX12.Shader, CompilesMeshShaders)
     const auto vertex = MmdLab::ShaderCompiler::Compile(MmdLab::MeshVertexShaderSource, "VSMain", "vs_5_1");
     MMDLAB_CHECK(vertex != nullptr);
 
+    const auto staticVertex = MmdLab::ShaderCompiler::Compile(MmdLab::StaticVertexShaderSource, "VSMain", "vs_5_1");
+    MMDLAB_CHECK(staticVertex != nullptr);
+
     const auto pixel = MmdLab::ShaderCompiler::Compile(MmdLab::MeshPixelShaderSource, "PSMain", "ps_5_1");
     MMDLAB_CHECK(pixel != nullptr);
 }

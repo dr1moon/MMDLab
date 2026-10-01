@@ -121,6 +121,56 @@ VSOutput VSMain(VSInput input)
 }
 )";
 
+// Static-mesh vertex shader: no skeleton, so no Bones/RefBones/refBoneOffset/blendIndices/
+// blendWeights. It still applies per-vertex morph deltas (t5) when the model has vertex morphs.
+inline const char* StaticVertexShaderSource = R"(
+cbuffer CameraConstants : register(b0)
+{
+    float4x4 viewProjection;
+    float4x4 view;
+    float4 lightDirection;
+    float4 cameraDirection;
+};
+
+// Per-instance world transform, supplied as root constants (register b2).
+cbuffer InstanceConstants : register(b2)
+{
+    float4x4 world;
+};
+
+// Morph deltas (model-space position offset per vertex), bound per model (t5). Indexed by the
+// vertex id and added to the position; zero for models without vertex morphs.
+StructuredBuffer<float3> MorphDeltas : register(t5);
+
+struct VSInput
+{
+    float4 position : POSITION;
+    float4 normal : NORMAL;
+    float2 uv : TEXCOORD;
+    float2 uv1 : TEXCOORD1;
+    uint vertexId : SV_VertexID;
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+    float3 normal : NORMAL;
+    float2 uv : TEXCOORD0;
+    float2 uv1 : TEXCOORD1;
+};
+
+VSOutput VSMain(VSInput input)
+{
+    VSOutput output;
+    float3 morphedPosition = input.position.xyz + MorphDeltas[input.vertexId];
+    output.position = mul(viewProjection, mul(world, float4(morphedPosition, 1.0)));
+    output.normal = mul((float3x3)view, mul((float3x3)world, input.normal.xyz));
+    output.uv = input.uv;
+    output.uv1 = input.uv1;
+    return output;
+}
+)";
+
 inline const char* MeshPixelShaderSource = R"(
 cbuffer CameraConstants : register(b0)
 {

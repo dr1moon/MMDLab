@@ -83,6 +83,7 @@ private:
     // GPU-side resources for one resident model, keyed in residentModels_ by model index.
     struct GpuModel
     {
+        bool skeletal = true; // False for Static meshes: no skinning/bone/refBones resources.
         Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer;
         Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer;
         D3D12_VERTEX_BUFFER_VIEW vertexView{};
@@ -175,6 +176,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateCulled_;       // CullMode = BACK.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateDoubleSided_;  // CullMode = NONE.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> reflectionPso_; // Reflective-floor pipeline (samples the offscreen target).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateStaticCulled_;      // Static VS, CullMode = BACK.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineStateStaticDoubleSided_; // Static VS, CullMode = NONE.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> reflectionStaticPso_;            // Static VS + reflective-floor PS.
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsvHeap_;
     Microsoft::WRL::ComPtr<ID3D12Resource> depthBuffer_;
