@@ -22,6 +22,31 @@ ModelFrameStats EvaluateModelFrame(
     ZoneScopedN("EvaluateModelFrame");
     ModelFrameStats stats;
 
+    // A Static mesh has no skeleton: skip pose evaluation, physics, and skinning. Vertex morphs
+    // still apply (bone morphs are ignored — there is no skeleton to drive them).
+    if (model.meshType == MeshType::Static)
+    {
+        if (input.animator != nullptr && input.animator->HasMotion())
+        {
+            const VmdAnimator& animator = *input.animator;
+            if (scratch.cachedMotionGeneration != animator.MotionGeneration())
+            {
+                scratch.cachedMotionGeneration = animator.MotionGeneration();
+                animator.ResolveMorphTrackIndices(model.morphs, scratch.morphTrack);
+            }
+            animator.SampleMorphWeights(model.morphs, scratch.morphTrack, scratch.morphWeights);
+            ResolveMorphWeights(model.morphs, scratch.morphWeights, scratch.resolvedWeights, scratch.morphStack);
+        }
+        else
+        {
+            scratch.resolvedWeights.assign(model.morphs.morphs.size(), 0.0f);
+        }
+
+        std::fill(output.morphDeltas.begin(), output.morphDeltas.end(), 0.0f);
+        AccumulateVertexMorphDeltas(model.morphs, scratch.resolvedWeights, output.morphDeltas);
+        return stats;
+    }
+
     const bool animated = input.animator != nullptr && input.animator->HasMotion();
     if (animated)
     {
