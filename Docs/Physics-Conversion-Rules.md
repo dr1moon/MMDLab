@@ -89,11 +89,34 @@ distinct bodies. The three cases and their intended meaning:
    the body back toward the bone it is attached to. `PhysicsScene` implements
    this by constraining the body to a kinematic anchor body that tracks the
    body's bone each frame. mmd_tools has no explicit rule for this case.
-3. **No body** (`bodyA == -1` or `bodyB == -1`): the joint connects the other
-   body to a fixed point at the joint's location. mmd_tools maps `-1` to an
-   unconnected constraint side (`None`), which Blender treats as a world anchor.
-   MMDLab currently rejects `-1` during PMX parsing; no model in the project
-   uses it yet, but a complete rule set must define it.
+3. **No body** (`bodyA == -1` or `bodyB == -1`): this endpoint references no
+   rigid body. The provisional reading is that it anchors the other body to a
+   fixed point at the joint's location (a WorldAnchor), matching mmd_tools,
+   which maps `-1` to an unconnected constraint side (`None`). This is a
+   hypothesis, not confirmed semantics; see [Open decisions](#open-decisions).
+   MMDLab currently rejects `-1` during PMX parsing.
+
+### Constraint endpoint resolution
+
+The three body-index cases reduce to resolving each joint side to an endpoint
+type and pairing the two. The planned abstraction (only the self-joint branch is
+implemented today) is:
+
+```cpp
+enum class ConstraintEndpointType
+{
+    RigidBody,   // A PMX rigid body.
+    WorldAnchor, // A fixed point at the joint transform; PROVISIONAL for -1.
+    BoneAnchor,  // The bone a rigid body is attached to (the self-joint case).
+};
+```
+
+| Case | Endpoint pair | Status |
+|---|---|---|
+| `bodyA != bodyB`, both valid | RigidBody ↔ RigidBody | Done |
+| `bodyA == bodyB` | BoneAnchor ↔ RigidBody | Done, tested |
+| `bodyA == -1` | WorldAnchor ↔ RigidBody | Not implemented; hypothesis |
+| `bodyB == -1` | RigidBody ↔ WorldAnchor | Not implemented; hypothesis |
 
 ## Constraint softness
 
@@ -117,11 +140,42 @@ fixed step with at most 10 sub-steps per frame, and a ground plane at `y = 0`.
 
 ## Open decisions
 
-1. **Joint body index `-1`** (fixed anchor). Decide whether to map it to a world
-   anchor, as mmd_tools does, or to the remaining body's bone. The self-joint
-   handling is the nearest existing precedent: both are "body to anchor"
-   constraints with a different anchor.
-2. **Soft constraints**. Decide whether to replicate MMD's soft-limit behavior
-   (custom solver info or spring parameters) or accept hard limits for now.
-3. **Joint types 1-5** (PMX 2.1). Currently collapsed to a 6-DOF spring. If a
-   model using them ever appears, decide whether the collapse is acceptable.
+### Joint endpoint with rigid-body index == -1
+
+Confirmed:
+
+- PMX permits -1 as a null rigid-body reference.
+- It means that this endpoint does not reference a PMX rigid body.
+- blender_mmd_tools maps -1 to None and represents the constraint as having a
+  fixed/world-side endpoint.
+- No bone-anchor derivation is present in blender_mmd_tools.
+
+Local corpus:
+
+- 33 PMX files scanned.
+- 0 joints use -1.
+- Therefore the local corpus provides no behavioral evidence.
+
+Current hypothesis:
+
+- Treat -1 as a WorldAnchor at the PMX joint transform.
+
+Status:
+
+- NOT CONFIRMED against the reference MMD runtime.
+- Do not encode this as definitive MMD semantics yet.
+
+Future validation:
+
+- Find a real PMX containing a -1 joint.
+- Compare behavior against MMD/reference implementation.
+
+### Soft constraints
+
+Decide whether to replicate MMD's soft-limit behavior (custom solver info or
+spring parameters) or accept hard limits for now.
+
+### Joint types 1-5 (PMX 2.1)
+
+Currently collapsed to a 6-DOF spring. If a model using them ever appears,
+decide whether the collapse is acceptable.
