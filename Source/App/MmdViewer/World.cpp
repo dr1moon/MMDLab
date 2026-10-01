@@ -205,6 +205,9 @@ void World::SelectLevel(const std::size_t index)
         return;
     }
     selectedLevel_ = index;
+    // The newly selected level's simulated bones (hair, cloth) restart from the pose instead of
+    // resuming a simulation that has been frozen since the level was last shown.
+    physicsResetRequested_ = true;
     if (pending_[index].loaded)
     {
         ++levelGeneration_;

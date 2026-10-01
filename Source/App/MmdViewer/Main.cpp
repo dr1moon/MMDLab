@@ -189,6 +189,10 @@ int wmain(const int argc, wchar_t* argv[])
         // Per-model evaluation scratch, parallel to the registry models and reused across frames.
         std::vector<MmdLab::ModelFrameScratch> modelScratch;
         std::vector<MmdLab::ModelFrameStats> modelStats;
+        // Model indices evaluated this frame: the selected level's visible instances. Hidden
+        // levels' models (and their physics) are skipped, so an off-screen character costs
+        // nothing until it is selected.
+        std::vector<std::size_t> visibleModels;
         std::uint32_t lastPoseGeneration = 0;
         std::uint32_t lastMotionGeneration = 0;
         float lastMotionFrames = 0.0f;
@@ -282,6 +286,17 @@ int wmain(const int argc, wchar_t* argv[])
             // slice is sized up front (bone, vertex, and body counts are fixed per model), so each
             // evaluation writes only its own range and touches only its own scratch.
             const auto& models = modelRegistry.Models();
+            // Evaluate only what the renderer draws this frame: the selected level's visible
+            // instances. Hidden levels' models (and their physics) are skipped entirely.
+            visibleModels.clear();
+            visibleModels.reserve(selectedInstances.size());
+            for (const MmdLab::ModelInstance& instance : selectedInstances)
+            {
+                if (instance.visible && instance.modelIndex < models.size())
+                {
+                    visibleModels.push_back(instance.modelIndex);
+                }
+            }
             MmdLab::PhysicsStats physicsStats;
             physicsStats.enabled = world.PhysicsEnabled();
             physicsStats.debugDraw = world.PhysicsDebugDraw();
@@ -343,7 +358,10 @@ int wmain(const int argc, wchar_t* argv[])
             };
             {
                 ZoneScopedN("GameThread.EvaluateModels");
-                computeGroup.ParallelFor(models.size(), evaluateModel);
+                computeGroup.ParallelFor(visibleModels.size(), [&](const std::size_t i)
+                {
+                    evaluateModel(visibleModels[i]);
+                });
             }
             for (const MmdLab::ModelFrameStats& stats : modelStats)
             {
