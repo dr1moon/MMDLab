@@ -64,3 +64,8 @@ and is dropped; no model in the project hits this case.
    limit, e.g. `MmdViewer.exe --frames 120`.
 3. The viewer loads and simulates all models, including the three above, and
    exits cleanly instead of aborting.
+
+## See also
+
+[Physics-Conversion-Rules.md](Physics-Conversion-Rules.md) is the full catalog
+of PMX-to-Bullet conversion rules; this self-joint case is one entry in it.
