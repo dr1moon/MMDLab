@@ -1,6 +1,5 @@
 #include "Runtime/Scene/StaticFloor.h"
 
-#include "Runtime/Animation/SkeletonPose.h"
 #include "Runtime/Asset/Model.h"
 
 namespace MmdLab
@@ -11,6 +10,7 @@ Model BuildReflectiveFloorModel()
 
     Model model;
     model.name = "ReflectiveFloor";
+    model.meshType = MeshType::Static;
 
     // A unit-up quad in the XZ plane, wound so its +Y normal faces the camera from above. The
     // vertex shader recomputes the w component, so it is left at 1.0 for clarity.
@@ -31,8 +31,7 @@ Model BuildReflectiveFloorModel()
     material.flags = 0x01u; // Double-sided so the floor never back-face culls.
     model.mesh.materials = { material };
 
-    model.mesh.drawPackets = { { 0, 6, 0, 0, 1 } };
-    model.mesh.refBones = { 0 };
+    model.mesh.drawPackets = { { 0, 6, 0, 0, 0 } }; // Static: no skin-reference bones.
 
     model.mesh.boundsMin[0] = -kHalfExtent;
     model.mesh.boundsMin[1] = 0.0f;
@@ -41,31 +40,8 @@ Model BuildReflectiveFloorModel()
     model.mesh.boundsMax[1] = 0.0f;
     model.mesh.boundsMax[2] = kHalfExtent;
 
-    // One root bone at the origin with a +Y tail: its bind rotation and bind pose collapse to
-    // identity, so the skinning palette is identity and the quad passes through the skinned
-    // vertex shader unchanged. The shader always reads Bones/RefBones, so a valid single-bone
-    // table is required (an empty refBones table would leave the SRV unbound).
-    Bone root;
-    root.name = "floor_root";
-    root.position[0] = 0.0f;
-    root.position[1] = 0.0f;
-    root.position[2] = 0.0f;
-    root.tail[0] = 0.0f;
-    root.tail[1] = 1.0f;
-    root.tail[2] = 0.0f;
-    root.parentIndex = kInvalidBoneIndex;
-    model.skeleton.bones = { root };
-    BuildChildren(model.skeleton);
-
-    for (int i = 0; i < 4; ++i)
-    {
-        SkinningVertex vertex;
-        vertex.boneIndices[0] = 0;
-        vertex.boneWeights[0] = 1.0f;
-        model.skinning.push_back(vertex);
-    }
-
-    model.bindPose = BuildBindPose(model.skeleton);
+    // A Static floor: no skeleton, skinning, or bind pose. The static vertex shader transforms the
+    // quad directly without reading Bones/RefBones.
     return model;
 }
 } // namespace MmdLab

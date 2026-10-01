@@ -107,6 +107,15 @@ MMDLAB_TEST(Asset.Pmx, ParsesBonesAndSkinning)
         MMDLAB_CHECK(weightSum > 0.99f && weightSum < 1.01f);
     }
     std::printf("  skinning weights normalized\n");
+
+    // Classification: a Static mesh cooks with no skinning/refBones; a Skeletal mesh carries a
+    // real dependency (multi-bone skinning, a bone morph, or physics).
+    const MmdLab::MmdlMeshData cooked = MmdLab::ConvertPmxToMmdl(mesh);
+    if (cooked.meshType == MmdLab::MeshType::Static)
+    {
+        MMDLAB_CHECK(cooked.skinning.empty());
+        MMDLAB_CHECK(cooked.refBones.empty());
+    }
 }
 
 MMDLAB_TEST(Asset.Model, RetainsSkeletonAndSkinning)
@@ -119,6 +128,15 @@ MMDLAB_TEST(Asset.Model, RetainsSkeletonAndSkinning)
     }
 
     const MmdLab::Model model = MmdLab::ModelRegistry::ParseModelFile(pmx);
+
+    if (model.meshType == MmdLab::MeshType::Static)
+    {
+        // A single-bone model builds no runtime skeleton, skinning, or bind pose.
+        MMDLAB_CHECK(model.skeleton.bones.empty());
+        MMDLAB_CHECK(model.skinning.empty());
+        MMDLAB_CHECK(model.bindPose.inverseBind.empty());
+        return;
+    }
 
     MMDLAB_CHECK(model.skeleton.bones.size() > 0);
     MMDLAB_CHECK(model.skinning.size() == model.mesh.vertices.size());

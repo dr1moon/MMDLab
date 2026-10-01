@@ -167,7 +167,7 @@ void World::FinishModel(const std::size_t levelIndex, const std::size_t modelSlo
         {
             physicsScenes_.resize(instance.modelIndex + 1);
         }
-        if (!model.physics.bodies.empty())
+        if (model.meshType == MeshType::Skeletal && !model.physics.bodies.empty())
         {
             physicsScenes_[instance.modelIndex] =
                 std::make_unique<PhysicsScene>(model.physics, model.skeleton, model.bindPose);

@@ -21,76 +21,87 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
 {
     Model model;
     model.name = std::move(name);
+    model.meshType = meshData.meshType;
     model.mesh = BuildMeshAsset(meshData);
 
-    model.skeleton.bones.reserve(meshData.bones.size());
-    for (const MmdlBone& source : meshData.bones)
+    // A Static mesh has no runtime skeleton, skinning, or bind pose; only Skeletal models build
+    // the bone hierarchy and skin weights.
+    if (meshData.meshType == MeshType::Skeletal)
     {
-        Bone bone;
-        bone.name = source.name;
-        bone.parentIndex = source.parentIndex;
-        for (int axis = 0; axis < 3; ++axis)
+        model.skeleton.bones.reserve(meshData.bones.size());
+        for (const MmdlBone& source : meshData.bones)
         {
-            bone.position[axis] = source.position[axis];
-            bone.tail[axis] = source.tail[axis];
-            bone.localX[axis] = source.localX[axis];
-            bone.localZ[axis] = source.localZ[axis];
-            bone.fixedAxis[axis] = source.fixedAxis[axis];
-        }
-        bone.hasLocalAxes = source.hasLocalAxes != 0;
-        bone.hasInheritRotation = source.hasInheritRotation != 0;
-        bone.hasInheritTranslation = source.hasInheritTranslation != 0;
-        bone.inheritParentIndex = source.inheritParentIndex;
-        bone.inheritInfluence = source.inheritInfluence;
-        bone.hasFixedAxis = source.hasFixedAxis != 0;
-        bone.deformLayer = source.deformLayer;
-        bone.afterPhysics = source.afterPhysics != 0;
-        model.skeleton.bones.push_back(std::move(bone));
-    }
-
-    BuildChildren(model.skeleton);
-
-    // IK chains: every bone that stores an IK target drives one chain.
-    for (std::size_t i = 0; i < meshData.bones.size(); ++i)
-    {
-        const MmdlBone& source = meshData.bones[i];
-        if (source.ikTargetIndex == kInvalidBoneIndex)
-        {
-            continue;
-        }
-        IkChain chain;
-        chain.ikBoneIndex = static_cast<std::uint16_t>(i);
-        chain.targetBoneIndex = source.ikTargetIndex;
-        chain.loopCount = source.ikLoopCount;
-        chain.limitAngle = source.ikLimitAngle;
-        chain.links.reserve(source.ikLinks.size());
-        for (const MmdlIkLink& sourceLink : source.ikLinks)
-        {
-            IkLink link;
-            link.boneIndex = sourceLink.boneIndex;
-            link.hasLimit = sourceLink.hasLimit != 0;
+            Bone bone;
+            bone.name = source.name;
+            bone.parentIndex = source.parentIndex;
             for (int axis = 0; axis < 3; ++axis)
             {
-                link.limitMin[axis] = sourceLink.limitMin[axis];
-                link.limitMax[axis] = sourceLink.limitMax[axis];
+                bone.position[axis] = source.position[axis];
+                bone.tail[axis] = source.tail[axis];
+                bone.localX[axis] = source.localX[axis];
+                bone.localZ[axis] = source.localZ[axis];
+                bone.fixedAxis[axis] = source.fixedAxis[axis];
             }
-            chain.links.push_back(link);
+            bone.hasLocalAxes = source.hasLocalAxes != 0;
+            bone.hasInheritRotation = source.hasInheritRotation != 0;
+            bone.hasInheritTranslation = source.hasInheritTranslation != 0;
+            bone.inheritParentIndex = source.inheritParentIndex;
+            bone.inheritInfluence = source.inheritInfluence;
+            bone.hasFixedAxis = source.hasFixedAxis != 0;
+            bone.deformLayer = source.deformLayer;
+            bone.afterPhysics = source.afterPhysics != 0;
+            model.skeleton.bones.push_back(std::move(bone));
         }
-        model.skeleton.ikChains.push_back(std::move(chain));
-    }
-    BuildDeformOrder(model.skeleton);
 
-    // Skinning arrives already remapped to submesh-local u8 indices by the cooker.
-    model.skinning.reserve(meshData.skinning.size());
-    for (const MmdlSkinningVertex& vertex : meshData.skinning)
-    {
-        SkinningVertex skinning;
-        for (int slot = 0; slot < 4; ++slot)
+        BuildChildren(model.skeleton);
+
+        // IK chains: every bone that stores an IK target drives one chain.
+        for (std::size_t i = 0; i < meshData.bones.size(); ++i)
         {
-            skinning.boneIndices[slot] = vertex.boneIndices[slot];
-            skinning.boneWeights[slot] = vertex.boneWeights[slot];
+            const MmdlBone& source = meshData.bones[i];
+            if (source.ikTargetIndex == kInvalidBoneIndex)
+            {
+                continue;
+            }
+            IkChain chain;
+            chain.ikBoneIndex = static_cast<std::uint16_t>(i);
+            chain.targetBoneIndex = source.ikTargetIndex;
+            chain.loopCount = source.ikLoopCount;
+            chain.limitAngle = source.ikLimitAngle;
+            chain.links.reserve(source.ikLinks.size());
+            for (const MmdlIkLink& sourceLink : source.ikLinks)
+            {
+                IkLink link;
+                link.boneIndex = sourceLink.boneIndex;
+                link.hasLimit = sourceLink.hasLimit != 0;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    link.limitMin[axis] = sourceLink.limitMin[axis];
+                    link.limitMax[axis] = sourceLink.limitMax[axis];
+                }
+                chain.links.push_back(link);
+            }
+            model.skeleton.ikChains.push_back(std::move(chain));
         }
-        model.skinning.push_back(skinning);
+        BuildDeformOrder(model.skeleton);
+
+        // Skinning arrives already remapped to submesh-local u8 indices by the cooker.
+        model.skinning.reserve(meshData.skinning.size());
+        for (const MmdlSkinningVertex& vertex : meshData.skinning)
+        {
+            SkinningVertex skinning;
+            for (int slot = 0; slot < 4; ++slot)
+            {
+                skinning.boneIndices[slot] = vertex.boneIndices[slot];
+                skinning.boneWeights[slot] = vertex.boneWeights[slot];
+            }
+            model.skinning.push_back(skinning);
+        }
+
+        // Derive the inverse-bind matrices once so per-frame skeleton evaluation only needs to
+        // walk the hierarchy and multiply; this is a pure function of the skeleton, so it is safe
+        // on the I/O thread.
+        model.bindPose = BuildBindPose(model.skeleton);
     }
 
     // Morphs arrive already cooked: vertex offsets reference mesh-local vertices, and bone/group
@@ -98,11 +109,6 @@ Model BuildModelFromMmdlData(std::string name, const MmdlMeshData& meshData)
     model.morphs.morphs = meshData.morphs;
 
     model.physics = meshData.physics;
-
-    // Derive the inverse-bind matrices once so per-frame skeleton evaluation only needs to walk
-    // the hierarchy and multiply; this is a pure function of the skeleton, so it is safe on the
-    // I/O thread.
-    model.bindPose = BuildBindPose(model.skeleton);
 
     // Textures are decoded separately on the I/O workers; their paths stay in model.mesh.textures.
     return model;
