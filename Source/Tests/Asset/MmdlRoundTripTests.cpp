@@ -86,6 +86,7 @@ MmdLab::MmdlMeshData MakeTestMesh()
     root.ikLinks = { ikLink };
 
     mesh.bones = { root, child };
+    mesh.meshType = MmdLab::MeshType::Skeletal;
 
     for (int i = 0; i < 4; ++i)
     {
@@ -163,6 +164,7 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
     // Skeleton + skinning round-trip.
     MMDLAB_CHECK_EQUAL(expected.bones.size(), actual.bones.size());
     MMDLAB_CHECK_EQUAL(expected.skinning.size(), actual.skinning.size());
+    MMDLAB_CHECK(expected.meshType == actual.meshType);
 
     for (std::size_t i = 0; i < expected.bones.size(); ++i)
     {
@@ -214,6 +216,51 @@ MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesMesh)
         MMDLAB_CHECK_EQUAL(expected.boundsMin[axis], actual.boundsMin[axis]);
         MMDLAB_CHECK_EQUAL(expected.boundsMax[axis], actual.boundsMax[axis]);
     }
+}
+
+MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesStaticMeshType)
+{
+    MmdLab::MmdlMeshData expected;
+    expected.meshType = MmdLab::MeshType::Static;
+
+    // A single-bone, unskinned mesh: no skinning, no skin-reference-bone table, and a draw
+    // packet with a zero-length skin-reference-bone slice.
+    expected.vertices = {
+        { { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+        { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+        { { 1.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
+        { { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f } },
+    };
+    expected.indices = { 0, 1, 2, 0, 2, 3 };
+
+    MmdLab::MMDToonMaterial white;
+    white.baseColor[0] = 1.0f;
+    white.baseColor[1] = 1.0f;
+    white.baseColor[2] = 1.0f;
+    white.baseColor[3] = 1.0f;
+    expected.materials = { white };
+    expected.drawPackets = { { 0, 6, 0, 0, 0 } };
+
+    MmdLab::MmdlBone root{};
+    root.name = "root";
+    root.parentIndex = MmdLab::kInvalidBoneIndex;
+    expected.bones = { root };
+
+    expected.boundsMin[0] = 0.0f; expected.boundsMin[1] = 0.0f; expected.boundsMin[2] = 0.0f;
+    expected.boundsMax[0] = 1.0f; expected.boundsMax[1] = 0.0f; expected.boundsMax[2] = 1.0f;
+
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "mmdl_static_roundtrip.mmdl";
+    MmdLab::WriteMmdl(path, expected);
+    const MmdLab::MmdlMeshData actual = MmdLab::ReadMmdl(path);
+    std::filesystem::remove(path);
+
+    MMDLAB_CHECK(actual.meshType == MmdLab::MeshType::Static);
+    MMDLAB_CHECK(actual.skinning.empty());
+    MMDLAB_CHECK(actual.refBones.empty());
+    MMDLAB_CHECK_EQUAL(actual.vertices.size(), expected.vertices.size());
+    MMDLAB_CHECK_EQUAL(actual.drawPackets.size(), std::size_t{ 1 });
+    MMDLAB_CHECK_EQUAL(actual.drawPackets[0].refBoneOffset, std::uint32_t{ 0 });
+    MMDLAB_CHECK_EQUAL(actual.drawPackets[0].refBoneCount, std::uint32_t{ 0 });
 }
 
 MMDLAB_TEST(Asset.Mmdl, RoundTripPreservesPhysics)

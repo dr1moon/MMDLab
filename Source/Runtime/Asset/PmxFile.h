@@ -101,6 +101,10 @@ struct PmxBone
 // bone, and group stored; UV, material, flip, and impulse skipped); display frames are skipped;
 // rigid bodies and joints are stored. Vertex-morph offsets reference global PMX vertex indices here; ConvertPmxToMmdl fans
 // them out to mesh-local indices.
+//
+// Note: the "Static" in this type's name is historical ("parsed PMX geometry", as opposed to
+// VMD animation) and is NOT the runtime `MeshType::Static` classification — this struct carries
+// bones and skinning for both static and skeletal models.
 struct PmxStaticMesh
 {
     std::string modelName;

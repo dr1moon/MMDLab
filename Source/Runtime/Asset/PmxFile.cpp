@@ -664,6 +664,38 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
 {
     MmdlMeshData mesh;
 
+    // A mesh is Skeletal iff it actually needs a Skeleton to drive it: skinning references more
+    // than one distinct bone (so per-vertex transforms can differ), or it carries bone morphs, or
+    // its rigid bodies follow/drive bones. A single referenced bone renders identically at bind
+    // pose through the static path (inverse-bind cancels the bind transform), so it stays Static.
+    std::vector<char> referencedBones(pmx.bones.size(), 0);
+    std::size_t distinctBones = 0;
+    for (const PmxVertex& vertex : pmx.vertices)
+    {
+        for (int slot = 0; slot < 4; ++slot)
+        {
+            const std::int32_t bone = vertex.boneIndices[slot];
+            if (bone >= 0 && vertex.boneWeights[slot] > 0.0f
+                && static_cast<std::size_t>(bone) < referencedBones.size()
+                && referencedBones[static_cast<std::size_t>(bone)] == 0)
+            {
+                referencedBones[static_cast<std::size_t>(bone)] = 1;
+                ++distinctBones;
+            }
+        }
+    }
+    bool hasBoneMorph = false;
+    for (const Morph& morph : pmx.morphs)
+    {
+        if (morph.kind == MorphKind::Bone && !morph.boneDeltas.empty())
+        {
+            hasBoneMorph = true;
+            break;
+        }
+    }
+    const bool skeletal = distinctBones > 1 || hasBoneMorph || !pmx.physics.bodies.empty();
+    mesh.meshType = skeletal ? MeshType::Skeletal : MeshType::Static;
+
     // Union the bounds over the source vertices (the per-submesh split below duplicates vertices
     // but not their positions).
     for (const PmxVertex& vertex : pmx.vertices)
@@ -854,29 +886,36 @@ MmdlMeshData ConvertPmxToMmdl(const PmxStaticMesh& pmx)
         }
 
         packet.refBoneOffset = static_cast<std::uint32_t>(mesh.refBones.size());
-        packet.refBoneCount = refCount;
-        for (std::size_t b = 0; b < used.size(); ++b)
+        packet.refBoneCount = skeletal ? refCount : 0;
+        if (skeletal)
         {
-            if (used[b])
+            for (std::size_t b = 0; b < used.size(); ++b)
             {
-                mesh.refBones.push_back(static_cast<std::uint16_t>(b));
+                if (used[b])
+                {
+                    mesh.refBones.push_back(static_cast<std::uint16_t>(b));
+                }
             }
         }
 
-        // Append this submesh's skinning (u8 local indices), then its remapped indices.
-        for (const std::uint32_t globalVertex : localToGlobal)
+        // Append this submesh's skinning (u8 local indices), then its remapped indices. A Static
+        // mesh carries no skinning.
+        if (skeletal)
         {
-            const PmxVertex& source = pmx.vertices[globalVertex];
-            MmdlSkinningVertex skin{};
-            for (int slot = 0; slot < 4; ++slot)
+            for (const std::uint32_t globalVertex : localToGlobal)
             {
-                skin.boneWeights[slot] = source.boneWeights[slot];
-                const std::int32_t bone = source.boneIndices[slot];
-                skin.boneIndices[slot] = (bone >= 0 && static_cast<std::size_t>(bone) < used.size())
-                    ? boneLocal[static_cast<std::size_t>(bone)]
-                    : static_cast<std::uint8_t>(0);
+                const PmxVertex& source = pmx.vertices[globalVertex];
+                MmdlSkinningVertex skin{};
+                for (int slot = 0; slot < 4; ++slot)
+                {
+                    skin.boneWeights[slot] = source.boneWeights[slot];
+                    const std::int32_t bone = source.boneIndices[slot];
+                    skin.boneIndices[slot] = (bone >= 0 && static_cast<std::size_t>(bone) < used.size())
+                        ? boneLocal[static_cast<std::size_t>(bone)]
+                        : static_cast<std::uint8_t>(0);
+                }
+                mesh.skinning.push_back(skin);
             }
-            mesh.skinning.push_back(skin);
         }
 
         const std::uint32_t vertexBase = static_cast<std::uint32_t>(mesh.vertices.size() - localToGlobal.size());

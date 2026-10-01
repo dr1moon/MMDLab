@@ -17,7 +17,18 @@ namespace MmdLab
 // no pointers, raw C++ containers, or compiler-dependent enums.
 
 inline constexpr std::uint32_t MmdlMagic = 0x4C444D4D; // "MMDL".
-inline constexpr std::uint32_t MmdlVersion = 11;
+inline constexpr std::uint32_t MmdlVersion = 13;
+
+// Runtime mesh classification, mirroring Unreal Engine's StaticMesh vs SkeletalMesh. A Skeletal
+// mesh needs a skeleton to drive it (per-vertex skinning over more than one bone, bone morphs, or
+// bone-following physics); a Static mesh renders with a single rigid transform and no skeleton.
+// This is unrelated to `PmxStaticMesh`, whose "Static" only means "parsed PMX geometry" (it
+// carries bones and skinning for both classes).
+enum class MeshType : std::uint32_t
+{
+    Static = 0,
+    Skeletal = 1,
+};
 
 enum class MmdlChunkType : std::uint32_t
 {
@@ -68,8 +79,9 @@ struct MmdlMeshMetadata
     std::uint32_t vertexStride;
     float boundsMin[3];
     float boundsMax[3];
+    std::uint32_t meshType; // MeshType value (Static = 0, Skeletal = 1).
 };
-static_assert(sizeof(MmdlMeshMetadata) == 44);
+static_assert(sizeof(MmdlMeshMetadata) == 48);
 
 // One packed vertex: position + normal + UV, padded to 16-byte vectors (D3D12 prefers
 // four-component vertex inputs). Fixed 40-byte stride, no vertex color.
@@ -168,5 +180,8 @@ struct MmdlMeshData
     // re-scan the vertices. Sentinel-filled until populated.
     float boundsMin[3] = { 3.4e38f, 3.4e38f, 3.4e38f };
     float boundsMax[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
+
+    // Static (no skinning) vs Skeletal (multi-bone skinning).
+    MeshType meshType = MeshType::Static;
 };
 } // namespace MmdLab

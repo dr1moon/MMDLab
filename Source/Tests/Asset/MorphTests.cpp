@@ -33,9 +33,9 @@ MmdLab::MmdlMeshData MakeMeshWithMorphs()
     material.baseColor[2] = 1.0f;
     material.baseColor[3] = 1.0f;
     mesh.materials = { material };
-    mesh.drawPackets = { { 0, 3, 0, 0, 1 } };
-    mesh.refBones = { 0 };
+    mesh.drawPackets = { { 0, 3, 0, 0, 0 } }; // Static: no skin-reference bones.
     mesh.strings = { "white.png" };
+    mesh.meshType = MmdLab::MeshType::Static;
 
     MmdLab::MmdlBone bone{};
     bone.name = "root";
@@ -44,13 +44,7 @@ MmdLab::MmdlMeshData MakeMeshWithMorphs()
     bone.parentIndex = MmdLab::kInvalidBoneIndex;
     mesh.bones = { bone };
 
-    for (int i = 0; i < 3; ++i)
-    {
-        MmdLab::MmdlSkinningVertex skin{};
-        skin.boneIndices[0] = 0;
-        skin.boneWeights[0] = 1.0f;
-        mesh.skinning.push_back(skin);
-    }
+    // A Static mesh carries no skinning; the single root bone is an identity rigid transform.
 
     // Vertex morph (mesh-local indices).
     MmdLab::Morph smile;
@@ -178,6 +172,10 @@ MMDLAB_TEST(Asset.Mmdl, MorphRoundTripPreservesMorphs)
 
     MMDLAB_CHECK(expected.morphs.size() == 3);
     MMDLAB_CHECK(actual.morphs.size() == expected.morphs.size());
+    MMDLAB_CHECK(expected.meshType == MmdLab::MeshType::Static);
+    MMDLAB_CHECK(actual.meshType == expected.meshType);
+    MMDLAB_CHECK(actual.skinning.empty());
+    MMDLAB_CHECK(actual.refBones.empty());
 
     for (std::size_t i = 0; i < expected.morphs.size(); ++i)
     {

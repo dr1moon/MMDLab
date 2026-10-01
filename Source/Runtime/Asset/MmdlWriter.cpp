@@ -49,6 +49,10 @@ public:
 
     void Bytes(const void* data, const std::size_t count)
     {
+        if (count == 0)
+        {
+            return; // An empty vector's data() may be null; skip the insert.
+        }
         const auto* bytes = static_cast<const std::uint8_t*>(data);
         data_.insert(data_.end(), bytes, bytes + count);
     }
@@ -77,6 +81,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
     metadata.materialCount = static_cast<std::uint32_t>(mesh.materials.size());
     metadata.subMeshCount = static_cast<std::uint32_t>(mesh.drawPackets.size());
     metadata.vertexStride = sizeof(MmdlVertex);
+    metadata.meshType = static_cast<std::uint32_t>(mesh.meshType);
     for (int axis = 0; axis < 3; ++axis)
     {
         metadata.boundsMin[axis] = mesh.boundsMin[axis];
@@ -279,6 +284,7 @@ void WriteMmdl(const std::filesystem::path& path, const MmdlMeshData& mesh)
     {
         metadataBytes.F32(value);
     }
+    metadataBytes.U32(metadata.meshType);
 
     const ByteWriter* chunkPayloads[] = { &stringTable, &metadataBytes, &vertexBuffer, &indexBuffer, &materialTable, &subMeshTable, &skeleton, &skinning, &subMeshBoneTable, &morphChunk, &physicsChunk };
     const std::uint32_t chunkTypes[] = {

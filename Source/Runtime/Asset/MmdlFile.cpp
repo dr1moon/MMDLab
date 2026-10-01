@@ -207,8 +207,8 @@ MmdlMeshData ParseMmdl(const std::span<const std::uint8_t> data)
             break;
         case MmdlChunkType::MeshMetadata:
         {
-            // The buffer chunks carry the counts; the metadata carries the cooked bounds, the
-            // one per-mesh value not derivable from the buffers.
+            // The buffer chunks carry the counts; the metadata carries the cooked bounds and the
+            // mesh classification, the per-mesh values not derivable from the buffers.
             if (descriptor.size >= sizeof(MmdlMeshMetadata))
             {
                 MmdlMeshMetadata metadata{};
@@ -218,6 +218,11 @@ MmdlMeshData ParseMmdl(const std::span<const std::uint8_t> data)
                     mesh.boundsMin[axis] = metadata.boundsMin[axis];
                     mesh.boundsMax[axis] = metadata.boundsMax[axis];
                 }
+                if (metadata.meshType > static_cast<std::uint32_t>(MeshType::Skeletal))
+                {
+                    throw std::runtime_error(".mmdl has an invalid mesh type.");
+                }
+                mesh.meshType = static_cast<MeshType>(metadata.meshType);
             }
             break;
         }
@@ -320,12 +325,18 @@ MmdlMeshData ParseMmdl(const std::span<const std::uint8_t> data)
             throw std::runtime_error(".mmdl skinning buffer has a partial vertex.");
         }
         const std::size_t count = static_cast<std::size_t>(skinningChunk->size) / stride;
-        if (count != vertexCount)
+        // A Static mesh writes no skinning (an empty chunk); a Skeletal mesh must carry one
+        // skinning entry per vertex.
+        const bool emptyStatic = mesh.meshType == MeshType::Static && count == 0;
+        if (count != vertexCount && !emptyStatic)
         {
             throw std::runtime_error(".mmdl skinning count does not match the vertex count.");
         }
-        mesh.skinning.resize(count);
-        std::memcpy(mesh.skinning.data(), data.data() + skinningChunk->offset, skinningChunk->size);
+        if (count > 0)
+        {
+            mesh.skinning.resize(count);
+            std::memcpy(mesh.skinning.data(), data.data() + skinningChunk->offset, skinningChunk->size);
+        }
     }
 
     // Concatenated per-submesh skin-reference-bone lists (u16 global bone indices).
@@ -336,8 +347,11 @@ MmdlMeshData ParseMmdl(const std::span<const std::uint8_t> data)
             throw std::runtime_error(".mmdl sub-mesh bone table has a partial entry.");
         }
         const std::size_t count = static_cast<std::size_t>(refBoneChunk->size) / sizeof(std::uint16_t);
-        mesh.refBones.resize(count);
-        std::memcpy(mesh.refBones.data(), data.data() + refBoneChunk->offset, refBoneChunk->size);
+        if (count > 0)
+        {
+            mesh.refBones.resize(count);
+            std::memcpy(mesh.refBones.data(), data.data() + refBoneChunk->offset, refBoneChunk->size);
+        }
     }
 
     // Morphs (each carries its names inline, like the skeleton).
